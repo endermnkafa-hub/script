@@ -1,9 +1,14 @@
 --!strict
-local Logger = require("Core.Logger")
+local RemoteResolver = {}
+RemoteResolver.__index = RemoteResolver
 
-local RemoteResolver = {
-    _cache = {} :: { [string]: RemoteEvent | RemoteFunction },
-}
+function RemoteResolver.new(logger: any)
+    local self = setmetatable({
+        _logger = logger,
+        _cache = {},
+    }, RemoteResolver)
+    return self
+end
 
 function RemoteResolver:Resolve(namePattern: string): RemoteEvent?
     if self._cache[namePattern] and (self._cache[namePattern] :: Instance).Parent then

@@ -4,16 +4,24 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 
-local World = {
-    OriginalLighting = {
-        Ambient = Lighting.Ambient,
-        OutdoorAmbient = Lighting.OutdoorAmbient,
-        Brightness = Lighting.Brightness,
-        FogEnd = Lighting.FogEnd,
-    },
-    LastHopCheck = 0,
-    HopActive = false,
-}
+local World = {}
+World.__index = World
+
+function World.new(deps: { ConfigManager: any, Logger: any })
+    local self = setmetatable({
+        _configManager = deps.ConfigManager,
+        _logger = deps.Logger,
+        OriginalLighting = {
+            Ambient = Lighting.Ambient,
+            OutdoorAmbient = Lighting.OutdoorAmbient,
+            Brightness = Lighting.Brightness,
+            FogEnd = Lighting.FogEnd,
+        },
+        LastHopCheck = 0,
+        HopActive = false,
+    }, World)
+    return self
+end
 
 function World:ToggleFullBright(enable: boolean)
     if enable then

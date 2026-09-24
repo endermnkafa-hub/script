@@ -1,13 +1,19 @@
 --!strict
-local Profiler = {
-    Enabled = true,
-    Metrics = {} :: { [string]: { TotalTime: number, Calls: number, MinTime: number, MaxTime: number, LastTime: number, AvgMicroseconds: number, Budget: number, Status: string } },
-    FrameSamples = 0,
-    LastFpsCalc = os.clock(),
-    CurrentFPS = 60,
-    MemoryKB = 0,
-    PingMS = 0,
-}
+local Profiler = {}
+Profiler.__index = Profiler
+
+function Profiler.new()
+    local self = setmetatable({
+        Enabled = true,
+        Metrics = {},
+        FrameSamples = 0,
+        LastFpsCalc = os.clock(),
+        CurrentFPS = 60,
+        MemoryKB = 0,
+        PingMS = 0,
+    }, Profiler)
+    return self
+end
 
 function Profiler:Begin(tag: string, budgetMs: number?): number?
     if not self.Enabled then return nil end
@@ -19,7 +25,7 @@ function Profiler:Begin(tag: string, budgetMs: number?): number?
             MaxTime = 0,
             LastTime = 0,
             AvgMicroseconds = 0,
-            Budget = (budgetMs or 2.0) * 1000, -- convert to microseconds
+            Budget = (budgetMs or 2.0) * 1000, -- microseconds
             Status = "OK",
         }
     end
@@ -38,6 +44,7 @@ function Profiler:End(tag: string, startTime: number?)
         if duration > metric.MaxTime then metric.MaxTime = duration end
         metric.AvgMicroseconds = metric.TotalTime / metric.Calls
 
+        -- Active Budget Assessment
         if metric.AvgMicroseconds > metric.Budget then
             metric.Status = "OVER_BUDGET"
         else

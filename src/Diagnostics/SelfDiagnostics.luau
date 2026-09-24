@@ -1,8 +1,18 @@
 --!strict
-local Logger = require("Core.Logger")
-local ServiceContainer = require("Core.ServiceContainer")
-
 local SelfDiagnostics = {}
+SelfDiagnostics.__index = SelfDiagnostics
+
+function SelfDiagnostics.new(logger: any)
+    local self = setmetatable({
+        _logger = logger,
+        DegradedModes = {
+            Network = false,
+            Config = false,
+            Visuals = false,
+        }
+    }, SelfDiagnostics)
+    return self
+end
 
 function SelfDiagnostics:RunHealthCheck(): (boolean, { [string]: string })
     local report = {}
@@ -19,12 +29,29 @@ function SelfDiagnostics:RunHealthCheck(): (boolean, { [string]: string })
         end
     end
 
-    -- Check executor capabilities
-    report["API_writefile"] = (typeof(writefile) == "function") and "AVAILABLE" or "UNSUPPORTED"
-    report["API_hookmetamethod"] = (typeof(hookmetamethod) == "function") and "AVAILABLE" or "UNSUPPORTED"
-    report["API_Drawing"] = (typeof(Drawing) == "table" and Drawing.new ~= nil) and "AVAILABLE" or "UNSUPPORTED"
+    -- Real Degraded Fallback Assessment
+    if typeof(hookmetamethod) ~= "function" then
+        self.DegradedModes.Network = true
+        report["API_hookmetamethod"] = "UNSUPPORTED (Degraded Network Mode)"
+    else
+        report["API_hookmetamethod"] = "AVAILABLE"
+    end
 
-    Logger:Info("SelfDiagnostics", string.format("Health Check Complete. Status: %s", isHealthy and "HEALTHY" or "DEGRADED"))
+    if typeof(writefile) ~= "function" then
+        self.DegradedModes.Config = true
+        report["API_writefile"] = "UNSUPPORTED (Degraded In-Memory Config)"
+    else
+        report["API_writefile"] = "AVAILABLE"
+    end
+
+    if typeof(Drawing) ~= "table" or Drawing.new == nil then
+        self.DegradedModes.Visuals = true
+        report["API_Drawing"] = "UNSUPPORTED (Degraded Visuals Mode)"
+    else
+        report["API_Drawing"] = "AVAILABLE"
+    end
+
+    self._logger:Info("SelfDiagnostics", string.format("Health Check Complete. Status: %s", isHealthy and "HEALTHY" or "DEGRADED"))
     return isHealthy, report
 end
 

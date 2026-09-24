@@ -1,11 +1,17 @@
 --!strict
 local Signal = require("Core.Signal")
 
-local EventBus = {
-    _events = {} :: { [string]: any },
-    _history = {} :: { [string]: { any } },
-    _maxHistory = 20,
-}
+local EventBus = {}
+EventBus.__index = EventBus
+
+function EventBus.new()
+    local self = setmetatable({
+        _events = {},
+        _history = {},
+        _maxHistory = 25,
+    }, EventBus)
+    return self
+end
 
 function EventBus:Subscribe(eventName: string, callback: (...any) -> ())
     if not self._events[eventName] then

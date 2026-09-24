@@ -1,45 +1,55 @@
 --!strict
-local EventBus = require("Core.EventBus")
-local Logger = require("Core.Logger")
-local RemoteResolver = require("Network.RemoteResolver")
+local NetworkEngine = {}
+NetworkEngine.__index = NetworkEngine
 
-local NetworkEngine = {
-    OutgoingHooked = false,
-    PacketCount = 0,
-    LastPacketTick = 0,
-    LastGoal = nil :: string?,
-}
+function NetworkEngine.new(deps: { Logger: any, EventBus: any, RemoteResolver: any })
+    local self = setmetatable({
+        _logger = deps.Logger,
+        _eventBus = deps.EventBus,
+        _remoteResolver = deps.RemoteResolver,
+        OutgoingHooked = false,
+        PacketCount = 0,
+        LastPacketTick = 0,
+        LastGoal = nil,
+        _degradedMode = false,
+    }, NetworkEngine)
+    return self
+end
 
 function NetworkEngine:Init()
     pcall(function()
         if typeof(hookmetamethod) == "function" and typeof(getnamecallmethod) == "function" then
             local oldNamecall
-            oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+            local this = self
+            oldNamecall = hookmetamethod(game, "__namecall", function(selfRemote, ...)
                 local method = getnamecallmethod()
                 local args = {...}
 
-                if method == "FireServer" and self:IsA("RemoteEvent") then
-                    local name = self.Name:lower()
+                if method == "FireServer" and selfRemote:IsA("RemoteEvent") then
+                    local name = selfRemote.Name:lower()
                     if name:find("comm") or name:find("combat") or name:find("action") then
-                        NetworkEngine.PacketCount += 1
-                        NetworkEngine.LastPacketTick = os.clock()
+                        this.PacketCount += 1
+                        this.LastPacketTick = os.clock()
 
                         if type(args[1]) == "table" and args[1].Goal then
-                            NetworkEngine.LastGoal = tostring(args[1].Goal)
-                            EventBus:Publish("Network.OutgoingGoal", args[1].Goal, args[1])
+                            this.LastGoal = tostring(args[1].Goal)
+                            this._eventBus:Publish("Network.OutgoingGoal", args[1].Goal, args[1])
                         end
                     end
                 end
-                return oldNamecall(self, ...)
+                return oldNamecall(selfRemote, ...)
             end)
             self.OutgoingHooked = true
-            Logger:Info("NetworkEngine", "Metamethod hook initialized successfully.")
+            self._logger:Info("NetworkEngine", "Metamethod Hook initialized successfully.")
+        else
+            self._degradedMode = true
+            self._logger:Warn("NetworkEngine", "Running in Degraded Mode (hookmetamethod API unsupported)")
         end
     end)
 end
 
 function NetworkEngine:SendAction(goalName: string, payload: any?): boolean
-    local remote = RemoteResolver:Resolve("Communicate")
+    local remote = self._remoteResolver:Resolve("Communicate")
     if remote then
         local data = payload or {}
         data.Goal = goalName

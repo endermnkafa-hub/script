@@ -7,9 +7,11 @@ local Scheduler = require("Core.Scheduler")
 local StateMachine = require("Architecture.StateMachine")
 local FeatureManager = require("Architecture.FeatureManager")
 local Profiler = require("Performance.Profiler")
-local Cache = require("Performance.Cache")
+local CacheEngine = require("Performance.Cache")
+local ObjectPool = require("Performance.ObjectPool")
 local ConfigManager = require("Config.ConfigManager")
 local NetworkEngine = require("Network.NetworkEngine")
+local RemoteResolver = require("Network.RemoteResolver")
 local Combat = require("Systems.Combat")
 local Movement = require("Systems.Movement")
 local Survival = require("Systems.Survival")
@@ -26,128 +28,234 @@ local Players = game:GetService("Players")
 local Bootstrap = {}
 
 function Bootstrap:Init()
-    Logger:Info("Bootstrap", "=== 4080 HUB v8.0 EXPERT/SPECIALIST FRAMEWORK BOOTING ===")
+    local logger = Logger.new(3)
+    logger:Info("Bootstrap", "=== 4080 HUB v8.5 TRUE EXPERT/SPECIALIST FRAMEWORK BOOTING ===")
 
-    -- 1. Register Services into IoC Container
-    ServiceContainer:Register("Signal", Signal)
-    ServiceContainer:Register("EventBus", EventBus)
-    ServiceContainer:Register("Logger", Logger)
-    ServiceContainer:Register("Scheduler", Scheduler)
-    ServiceContainer:Register("StateMachine", StateMachine)
-    ServiceContainer:Register("FeatureManager", FeatureManager)
-    ServiceContainer:Register("Profiler", Profiler)
-    ServiceContainer:Register("Cache", Cache)
-    ServiceContainer:Register("ConfigManager", ConfigManager)
-    ServiceContainer:Register("NetworkEngine", NetworkEngine)
-    ServiceContainer:Register("Combat", Combat)
-    ServiceContainer:Register("Movement", Movement)
-    ServiceContainer:Register("Survival", Survival)
-    ServiceContainer:Register("Skills", Skills)
-    ServiceContainer:Register("World", World)
-    ServiceContainer:Register("Visuals", Visuals)
+    -- 1. Create Core Instances (Instance-based OOP Architecture)
+    local container = ServiceContainer.new()
+    local eventBus = EventBus.new()
+    local scheduler = Scheduler.new()
+    local profiler = Profiler.new()
+    local cache = CacheEngine.new(0.08)
+    local fsm = StateMachine.new("IDLE", logger)
+    local featureManager = FeatureManager.new(logger, profiler)
+    local configManager = ConfigManager.new(logger)
+    local diagnostics = SelfDiagnostics.new(logger)
 
-    -- 2. Run Diagnostics & Unit Tests
-    SelfDiagnostics:RunHealthCheck()
-    local testsPassed, testResults = UnitTests:RunAll()
-    Logger:Info("Bootstrap", string.format("Automated Diagnostics Complete. Tests Passed: %s", tostring(testsPassed)))
+    -- 2. Register Core Singletons / Factories into IoC Container
+    container:Register("Logger", logger)
+    container:Register("EventBus", eventBus)
+    container:Register("Scheduler", scheduler)
+    container:Register("Profiler", profiler)
+    container:Register("Cache", cache)
+    container:Register("StateMachine", fsm)
+    container:Register("FeatureManager", featureManager)
+    container:Register("ConfigManager", configManager)
+    container:Register("Diagnostics", diagnostics)
+    container:Register("ObjectPool", ObjectPool)
 
-    -- 3. Initialize Network Metamethod Hooking
-    NetworkEngine:Init()
-
-    -- 4. Load Saved Configurations
-    ConfigManager:Load()
-
-    -- 5. Register Feature Pipelines
-    FeatureManager:Register({
-        Name = "Aimlock",
-        Phase = "RenderStepped",
-        Priority = 100,
-        Budget = 1.5,
-        Enabled = true,
-        Update = function(self, dt, ctx) Combat:UpdateAimlock(ConfigManager.Config) end
-    })
-
-    FeatureManager:Register({
-        Name = "FlyMovement",
-        Phase = "RenderStepped",
-        Priority = 90,
-        Budget = 1.0,
-        Enabled = true,
-        Update = function(self, dt, ctx) Movement:UpdateFly(dt, ConfigManager.Config) end
-    })
-
-    FeatureManager:Register({
-        Name = "CombatEngine",
-        Phase = "Heartbeat",
-        Priority = 100,
-        Budget = 2.0,
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            Combat:UpdateAutoM1(ConfigManager.Config)
-            Combat:UpdateAutoBlock(ConfigManager.Config)
-            Combat:UpdateHitboxExpander(ConfigManager.Config)
-        end
-    })
-
-    FeatureManager:Register({
-        Name = "MovementEngine",
-        Phase = "Heartbeat",
-        Priority = 90,
-        Budget = 1.0,
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            Movement:UpdateSpeed(dt, ConfigManager.Config)
-            Movement:UpdateAntiVoid(ConfigManager.Config)
-        end
-    })
-
-    FeatureManager:Register({
-        Name = "SurvivalEngine",
-        Phase = "Heartbeat",
-        Priority = 85,
-        Budget = 1.5,
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            Survival:UpdateSkyDodge(dt, ConfigManager.Config)
-            Survival:CheckSkyEscape(ConfigManager.Config)
-        end
-    })
-
-    FeatureManager:Register({
-        Name = "VisualsEngine",
-        Phase = "Heartbeat",
-        Priority = 70,
-        Budget = 2.0,
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            Visuals:Update(ConfigManager.Config)
-        end
-    })
-
-    -- 6. Connect Game Loop Pipelines
-    RunService.RenderStepped:Connect(function(dt)
-        Profiler:UpdateSystemMetrics()
-        FeatureManager:ExecutePipeline("RenderStepped", dt, ServiceContainer)
+    -- 3. Register Systems via True Constructor Dependency Injection
+    container:Register("RemoteResolver", function(c)
+        return RemoteResolver.new(c:Get("Logger"))
     end)
 
-    RunService.Stepped:Connect(function()
-        Movement:UpdateNoclip(ConfigManager.Config)
-        FeatureManager:ExecutePipeline("Stepped", 1/60, ServiceContainer)
+    container:Register("NetworkEngine", function(c)
+        return NetworkEngine.new({
+            Logger = c:Get("Logger"),
+            EventBus = c:Get("EventBus"),
+            RemoteResolver = c:Get("RemoteResolver"),
+        })
     end)
 
-    RunService.Heartbeat:Connect(function(dt)
-        StateMachine:Update(dt, ServiceContainer)
-        Scheduler:Step(dt)
-        FeatureManager:ExecutePipeline("Heartbeat", dt, ServiceContainer)
+    container:Register("EnemyState", function(c)
+        return EnemyState.new({
+            Cache = c:Get("Cache"),
+            EventBus = c:Get("EventBus"),
+            Logger = c:Get("Logger"),
+        })
+    end)
 
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= Players.LocalPlayer then
-                EnemyState:Update(player)
+    container:Register("Combat", function(c)
+        return Combat.new({
+            Cache = c:Get("Cache"),
+            EventBus = c:Get("EventBus"),
+            Network = c:Get("NetworkEngine"),
+            EnemyState = c:Get("EnemyState"),
+            Logger = c:Get("Logger"),
+            StateMachine = c:Get("StateMachine"),
+        })
+    end)
+
+    container:Register("Movement", function(c)
+        return Movement.new({
+            Cache = c:Get("Cache"),
+            Logger = c:Get("Logger"),
+        })
+    end)
+
+    container:Register("Survival", function(c)
+        return Survival.new({
+            Cache = c:Get("Cache"),
+            StateMachine = c:Get("StateMachine"),
+            EventBus = c:Get("EventBus"),
+            Logger = c:Get("Logger"),
+        })
+    end)
+
+    container:Register("Skills", function(c)
+        return Skills.new({
+            Cache = c:Get("Cache"),
+            Combat = c:Get("Combat"),
+            Logger = c:Get("Logger"),
+        })
+    end)
+
+    container:Register("World", function(c)
+        return World.new({
+            ConfigManager = c:Get("ConfigManager"),
+            Logger = c:Get("Logger"),
+        })
+    end)
+
+    container:Register("Visuals", function(c)
+        return Visuals.new({
+            Cache = c:Get("Cache"),
+            ObjectPool = ObjectPool,
+            Logger = c:Get("Logger"),
+        })
+    end)
+
+    -- 4. Run Diagnostics & Automated Unit Tests on Isolated Instances
+    diagnostics:RunHealthCheck()
+    local testsPassed, testResults = UnitTests.RunAll()
+    logger:Info("Bootstrap", string.format("Automated Isolated Test Suite: %s", testsPassed and "100% PASSED" or "TESTS FAILED"))
+
+    -- 5. Instantiate Core Systems via DI
+    local network = container:Get("NetworkEngine")
+    network:Init()
+
+    local combat = container:Get("Combat")
+    local movement = container:Get("Movement")
+    local survival = container:Get("Survival")
+    local skills = container:Get("Skills")
+    local world = container:Get("World")
+    local visuals = container:Get("Visuals")
+    local enemyState = container:Get("EnemyState")
+
+    -- 6. Load Config
+    configManager:Load()
+
+    -- 7. Active Scheduler Tasks Registration (Tiered Frequencies)
+    scheduler:Register("Aimlock_Fast", "Fast", function(dt)
+        combat:UpdateAimlock(configManager.Config)
+    end)
+
+    scheduler:Register("EnemyState_Normal", "Normal", function(dt)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= Players.LocalPlayer then
+                enemyState:Update(p)
             end
         end
     end)
 
-    Logger:Info("Bootstrap", "=== FRAMEWORK INITIALIZED & OPERATIONAL ===")
+    scheduler:Register("WorldHop_Slow", "Slow", function(dt)
+        world:CheckAutoServerHop(configManager.Config)
+    end)
+
+    scheduler:Register("Telemetry_Slow", "Slow", function(dt)
+        profiler:UpdateSystemMetrics()
+    end)
+
+    scheduler:Register("ConfigAutosave_Background", "Background", function(dt)
+        configManager:Save()
+    end)
+
+    -- 8. Register and Validate Feature Pipelines
+    featureManager:Register({
+        Name = "FlyMovement",
+        Phase = "RenderStepped",
+        Priority = 90,
+        Budget = 1.0,
+        Dependencies = { "Movement", "Cache" },
+        Enabled = true,
+        Update = function(self, dt, ctx) movement:UpdateFly(dt, configManager.Config) end
+    })
+
+    featureManager:Register({
+        Name = "CombatEngine",
+        Phase = "Heartbeat",
+        Priority = 100,
+        Budget = 2.0,
+        Dependencies = { "Combat", "Cache", "EnemyState" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            combat:UpdateAutoM1(configManager.Config)
+            combat:UpdateAutoBlock(configManager.Config)
+            combat:UpdateHitboxExpander(configManager.Config)
+        end
+    })
+
+    featureManager:Register({
+        Name = "MovementEngine",
+        Phase = "Heartbeat",
+        Priority = 90,
+        Budget = 1.0,
+        Dependencies = { "Movement" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            movement:UpdateSpeed(dt, configManager.Config)
+            movement:UpdateAntiVoid(configManager.Config)
+        end
+    })
+
+    featureManager:Register({
+        Name = "SurvivalEngine",
+        Phase = "Heartbeat",
+        Priority = 85,
+        Budget = 1.5,
+        Dependencies = { "Survival", "StateMachine" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            survival:UpdateSkyDodge(dt, configManager.Config)
+            survival:CheckSkyEscape(configManager.Config)
+        end
+    })
+
+    featureManager:Register({
+        Name = "VisualsEngine",
+        Phase = "Heartbeat",
+        Priority = 70,
+        Budget = 2.0,
+        Dependencies = { "Visuals", "Cache" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            visuals:Update(configManager.Config)
+        end
+    })
+
+    -- Validate all feature dependencies in DI container
+    local depsOk, depReport = featureManager:ValidateDependencies(container)
+    logger:Info("Bootstrap", string.format("Dependency Graph Validation: %s", depsOk and "ALL DEPENDENCIES SATISFIED" or "DEGRADED"))
+
+    featureManager:InitAll(container)
+
+    -- 9. Connect Game Loop Pipelines
+    RunService.RenderStepped:Connect(function(dt)
+        featureManager:ExecutePipeline("RenderStepped", dt, container)
+    end)
+
+    RunService.Stepped:Connect(function()
+        movement:UpdateNoclip(configManager.Config)
+        featureManager:ExecutePipeline("Stepped", 1/60, container)
+    end)
+
+    RunService.Heartbeat:Connect(function(dt)
+        fsm:Update(dt, container)
+        scheduler:Step(dt)
+        featureManager:ExecutePipeline("Heartbeat", dt, container)
+    end)
+
+    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (LEVEL 6 SPECIALIST ARCHITECTURE) ===")
 end
 
 return Bootstrap

@@ -1,20 +1,34 @@
 --!strict
 local ConfigSchema = require("Config.ConfigSchema")
 local HttpService = game:GetService("HttpService")
-local Logger = require("Core.Logger")
 
-local ConfigManager = {
-    FileName = "4080_Hub_TSB_Config.json",
-    Config = {},
-    RegisteredUI = {},
-}
+local ConfigManager = {}
+ConfigManager.__index = ConfigManager
 
--- Generate Default Config from Schema
-for catName, catSchema in pairs(ConfigSchema) do
-    ConfigManager.Config[catName] = {}
-    for key, spec in pairs(catSchema) do
-        ConfigManager.Config[catName][key] = spec.Default
+function ConfigManager.new(logger: any)
+    local self = setmetatable({
+        FileName = "4080_Hub_TSB_Config.json",
+        Config = {},
+        RegisteredUI = {},
+        _logger = logger,
+        _degradedMode = false,
+    }, ConfigManager)
+
+    for catName, catSchema in pairs(ConfigSchema) do
+        self.Config[catName] = {}
+        for key, spec in pairs(catSchema) do
+            self.Config[catName][key] = spec.Default
+        end
     end
+
+    if typeof(writefile) ~= "function" or typeof(readfile) ~= "function" then
+        self._degradedMode = true
+        if self._logger then
+            self._logger:Warn("ConfigManager", "Running in In-Memory Degraded Mode (writefile API unsupported)")
+        end
+    end
+
+    return self
 end
 
 local function SerializeValue(val: any): any
@@ -65,8 +79,8 @@ local function DeepMerge(target: any, source: any)
 end
 
 function ConfigManager:Save(): (boolean, string?)
-    if typeof(writefile) ~= "function" then
-        return false, "Executor writefile API not supported"
+    if self._degradedMode then
+        return true, "In-Memory"
     end
     local ok, err = pcall(function()
         local dataToSave = {}
@@ -76,16 +90,13 @@ function ConfigManager:Save(): (boolean, string?)
         local json = HttpService:JSONEncode(dataToSave)
         writefile(self.FileName, json)
     end)
-    if ok then Logger:Info("Config", "Saved config successfully.") end
+    if ok and self._logger then self._logger:Info("Config", "Saved config to disk.") end
     return ok, err
 end
 
 function ConfigManager:Load(): (boolean, string?)
-    if typeof(readfile) ~= "function" or typeof(isfile) ~= "function" then
-        return false, "Executor readfile/isfile API not supported"
-    end
-    if not isfile(self.FileName) then
-        return false, "Config file not found"
+    if self._degradedMode or not isfile(self.FileName) then
+        return false, "Config file not found or degraded"
     end
     local ok, err = pcall(function()
         local raw = readfile(self.FileName)
@@ -94,7 +105,7 @@ function ConfigManager:Load(): (boolean, string?)
         DeepMerge(self.Config, decoded)
         self:RefreshUI()
     end)
-    if ok then Logger:Info("Config", "Loaded config successfully.") end
+    if ok and self._logger then self._logger:Info("Config", "Loaded config from disk.") end
     return ok, err
 end
 
@@ -110,7 +121,7 @@ function ConfigManager:RefreshUI()
 end
 
 function ConfigManager:Reset()
-    if typeof(delfile) == "function" and typeof(isfile) == "function" and isfile(self.FileName) then
+    if typeof(delfile) == "function" and isfile(self.FileName) then
         pcall(function() delfile(self.FileName) end)
     end
     self:RefreshUI()

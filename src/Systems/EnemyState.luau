@@ -1,7 +1,4 @@
 --!strict
-local EventBus = require("Core.EventBus")
-local Cache = require("Performance.Cache")
-
 export type EnemyData = {
     Cooldowns: { [string]: number },
     IsRagdoll: boolean,
@@ -12,16 +9,25 @@ export type EnemyData = {
     LastSkillTick: number,
 }
 
-local EnemyState = {
-    _states = {} :: { [Player]: EnemyData },
-    Profiles = {
-        Saitama = { NormalPunch = 12, Consecutive = 15, Shove = 14, Uppercut = 16 },
-        Garou = { FlowingWater = 14, LethalWhirlwind = 15, HuntersGrasp = 18, PreysPeril = 16 },
-        Sonic = { FlashStrike = 12, WhirlwindKick = 14, Scatter = 16, Shuriken = 15 },
-        Suiryu = { VanishingKick = 14, HeadFirst = 15, SweepingKick = 16, FistBarrage = 18 },
-        Universal = { Skill1 = 14, Skill2 = 15, Skill3 = 16, Skill4 = 16 },
-    }
-}
+local EnemyState = {}
+EnemyState.__index = EnemyState
+
+function EnemyState.new(deps: { Cache: any, EventBus: any, Logger: any })
+    local self = setmetatable({
+        _cache = deps.Cache,
+        _eventBus = deps.EventBus,
+        _logger = deps.Logger,
+        _states = {},
+        Profiles = {
+            Saitama = { NormalPunch = 12, Consecutive = 15, Shove = 14, Uppercut = 16 },
+            Garou = { FlowingWater = 14, LethalWhirlwind = 15, HuntersGrasp = 18, PreysPeril = 16 },
+            Sonic = { FlashStrike = 12, WhirlwindKick = 14, Scatter = 16, Shuriken = 15 },
+            Suiryu = { VanishingKick = 14, HeadFirst = 15, SweepingKick = 16, FistBarrage = 18 },
+            Universal = { Skill1 = 14, Skill2 = 15, Skill3 = 16, Skill4 = 16 },
+        }
+    }, EnemyState)
+    return self
+end
 
 function EnemyState:Get(player: Player): EnemyData
     local data = self._states[player]
@@ -41,7 +47,7 @@ function EnemyState:Get(player: Player): EnemyData
 end
 
 function EnemyState:Update(player: Player)
-    local entry = Cache:GetPlayerEntry(player)
+    local entry = self._cache:GetPlayerEntry(player)
     if not entry or not entry.IsAlive then return end
 
     local data = self:Get(player)
@@ -53,10 +59,10 @@ function EnemyState:Update(player: Player)
         data.IsRagdoll = true
         data.RagdollStart = os.clock()
         data.WakeupTime = data.RagdollStart + 2.25
-        EventBus:Publish("Combat.EnemyRagdolled", player, data.WakeupTime)
+        self._eventBus:Publish("Combat.EnemyRagdolled", player, data.WakeupTime)
     elseif not isRag and data.IsRagdoll then
         data.IsRagdoll = false
-        EventBus:Publish("Combat.EnemyWakeup", player)
+        self._eventBus:Publish("Combat.EnemyWakeup", player)
     end
 
     local isBlock = false

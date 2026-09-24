@@ -1,22 +1,26 @@
 --!strict
-local Cache = require("Performance.Cache")
-local Logger = require("Core.Logger")
-local EventBus = require("Core.EventBus")
-local NetworkEngine = require("Network.NetworkEngine")
-local EnemyState = require("Systems.EnemyState")
-
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local Combat = {
-    CurrentTarget = nil :: Player?,
-    LastAttackTick = 0,
-    LastParryTick = 0,
-    LastBlockTick = 0,
-    M1ComboCount = 0,
-    MassBringActive = false,
-    MassBringEndTime = 0,
-}
+local Combat = {}
+Combat.__index = Combat
+
+function Combat.new(deps: { Cache: any, EventBus: any, Network: any, EnemyState: any, Logger: any, StateMachine: any })
+    local self = setmetatable({
+        _cache = deps.Cache,
+        _eventBus = deps.EventBus,
+        _network = deps.Network,
+        _enemyState = deps.EnemyState,
+        _logger = deps.Logger,
+        _fsm = deps.StateMachine,
+        CurrentTarget = nil,
+        LastAttackTick = 0,
+        LastParryTick = 0,
+        M1ComboCount = 0,
+        MassBringActive = false,
+    }, Combat)
+    return self
+end
 
 local function SafeMouseClick()
     local char = LocalPlayer.Character
@@ -58,7 +62,7 @@ local function SafeKeyClick(keyCode: Enum.KeyCode)
 end
 
 function Combat:GetTarget(config: any): Player?
-    local myEntry = Cache:GetPlayerEntry(LocalPlayer)
+    local myEntry = self._cache:GetPlayerEntry(LocalPlayer)
     if not myEntry or not myEntry.RootPart then return nil end
     local myPos = myEntry.RootPart.Position
 
@@ -67,14 +71,14 @@ function Combat:GetTarget(config: any): Player?
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
-        local entry = Cache:GetPlayerEntry(player)
+        local entry = self._cache:GetPlayerEntry(player)
         if not entry or not entry.IsAlive or not entry.RootPart then continue end
 
         local targetPart = entry.Character:FindFirstChild(config.Combat.AimPart or "HumanoidRootPart") or entry.RootPart
         local dist = (targetPart.Position - myPos).Magnitude
 
         if dist < bestScore then
-            if config.Combat.AimWallCheck and not Cache:CachedRaycast(myPos, targetPart.Position) then
+            if config.Combat.AimWallCheck and not self._cache:CachedRaycast(myPos, targetPart.Position) then
                 continue
             end
             bestScore = dist
@@ -91,8 +95,8 @@ function Combat:UpdateAimlock(config: any)
     local target = self:GetTarget(config)
     if not target then return end
 
-    local myEntry = Cache:GetPlayerEntry(LocalPlayer)
-    local tEntry = Cache:GetPlayerEntry(target)
+    local myEntry = self._cache:GetPlayerEntry(LocalPlayer)
+    local tEntry = self._cache:GetPlayerEntry(target)
     if not myEntry or not myEntry.RootPart or not tEntry or not tEntry.RootPart then return end
 
     local targetPos = tEntry.RootPart.Position
@@ -112,12 +116,17 @@ function Combat:UpdateAutoM1(config: any)
     local target = self.CurrentTarget or self:GetTarget(config)
     if not target then return end
 
-    local myEntry = Cache:GetPlayerEntry(LocalPlayer)
-    local tEntry = Cache:GetPlayerEntry(target)
+    local myEntry = self._cache:GetPlayerEntry(LocalPlayer)
+    local tEntry = self._cache:GetPlayerEntry(target)
     if not myEntry or not myEntry.RootPart or not tEntry or not tEntry.RootPart then return end
 
     local dist = (myEntry.RootPart.Position - tEntry.RootPart.Position).Magnitude
     if dist <= 14 then
+        -- Natural FSM State Management
+        if self._fsm.CurrentState == "IDLE" then
+            self._fsm:TransitionTo("COMBAT")
+        end
+
         local now = os.clock()
         if (now - self.LastAttackTick) >= (config.Combat.AutoM1Delay or 0.12) then
             self.LastAttackTick = now
@@ -129,13 +138,13 @@ end
 
 function Combat:UpdateAutoBlock(config: any)
     if not config.Combat.AutoParry and not config.Combat.AutoBlock then return end
-    local myEntry = Cache:GetPlayerEntry(LocalPlayer)
+    local myEntry = self._cache:GetPlayerEntry(LocalPlayer)
     if not myEntry or not myEntry.RootPart then return end
     local myPos = myEntry.RootPart.Position
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
-        local tEntry = Cache:GetPlayerEntry(player)
+        local tEntry = self._cache:GetPlayerEntry(player)
         if not tEntry or not tEntry.IsAlive or not tEntry.RootPart or not tEntry.Animator then continue end
 
         local dist = (tEntry.RootPart.Position - myPos).Magnitude
@@ -143,7 +152,7 @@ function Combat:UpdateAutoBlock(config: any)
             local isAttacking = false
             for _, track in ipairs(tEntry.Animator:GetPlayingAnimationTracks()) do
                 local name = (track.Name or ""):lower()
-                if name:find("attack") or name:find("punch") or name:find("slash") or name:find("strike") or name:find("swing") then
+                if name:find("attack") or name:find("punch") or name:find("slash") or name:find("strike") then
                     isAttacking = true
                     break
                 end
@@ -154,7 +163,7 @@ function Combat:UpdateAutoBlock(config: any)
                 if (now - self.LastParryTick) >= 0.08 then
                     self.LastParryTick = now
                     SafeKeyClick(Enum.KeyCode.F)
-                    EventBus:Publish("Combat.ParryExecuted", player)
+                    self._eventBus:Publish("Combat.ParryExecuted", player)
                     break
                 end
             end
@@ -167,7 +176,7 @@ function Combat:UpdateHitboxExpander(config: any)
     local sz = config.Combat.HitboxSize or 16
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
-            local entry = Cache:GetPlayerEntry(p)
+            local entry = self._cache:GetPlayerEntry(p)
             if entry and entry.IsAlive and entry.RootPart then
                 pcall(function()
                     entry.RootPart.Size = Vector3.new(sz, sz, sz)
@@ -182,7 +191,7 @@ end
 function Combat:ResetHitboxes()
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
-            local entry = Cache:GetPlayerEntry(p)
+            local entry = self._cache:GetPlayerEntry(p)
             if entry and entry.RootPart then
                 pcall(function()
                     entry.RootPart.Size = Vector3.new(2, 2, 1)

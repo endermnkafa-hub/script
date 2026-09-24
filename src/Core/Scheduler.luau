@@ -1,13 +1,27 @@
 --!strict
-local Scheduler = {
-    _intervals = {
-        Fast = 0,           -- Frame-rate bound (0s)
-        Normal = 0.05,      -- 20 Hz
-        Slow = 0.5,         -- 2 Hz
-        Background = 2.0,   -- 0.5 Hz
-    },
-    _tasks = {} :: { [string]: { Category: string, Callback: (dt: number) -> (), LastRun: number, Enabled: boolean } },
+local Scheduler = {}
+Scheduler.__index = Scheduler
+
+export type TaskDefinition = {
+    Category: string,
+    Callback: (dt: number) -> (),
+    LastRun: number,
+    Enabled: boolean,
+    ExecutionCount: number,
 }
+
+function Scheduler.new()
+    local self = setmetatable({
+        _intervals = {
+            Fast       = 0,      -- Frame-rate bound (0.016s)
+            Normal     = 0.05,   -- 20 Hz (Combat scan & State)
+            Slow       = 0.5,    -- 2 Hz (Telemetry & Hop check)
+            Background = 2.0,    -- 0.5 Hz (Autosave & Cache cleanup)
+        },
+        _tasks = {},
+    }, Scheduler)
+    return self
+end
 
 function Scheduler:Register(name: string, category: string, callback: (dt: number) -> (), enabled: boolean?)
     self._tasks[name] = {
@@ -15,6 +29,7 @@ function Scheduler:Register(name: string, category: string, callback: (dt: numbe
         Callback = callback,
         LastRun = 0,
         Enabled = enabled ~= false,
+        ExecutionCount = 0,
     }
 end
 
@@ -26,16 +41,29 @@ end
 
 function Scheduler:Step(dt: number)
     local now = os.clock()
-    for name, taskItem in pairs(self._tasks) do
+    for _, taskItem in pairs(self._tasks) do
         if taskItem.Enabled then
             local interval = self._intervals[taskItem.Category] or 0.05
             if (now - taskItem.LastRun) >= interval then
                 local taskDt = taskItem.LastRun == 0 and dt or (now - taskItem.LastRun)
                 taskItem.LastRun = now
+                taskItem.ExecutionCount += 1
                 pcall(taskItem.Callback, taskDt)
             end
         end
     end
+end
+
+function Scheduler:GetTaskStats(): { [string]: { Category: string, Executions: number, Enabled: boolean } }
+    local stats = {}
+    for name, item in pairs(self._tasks) do
+        stats[name] = {
+            Category = item.Category,
+            Executions = item.ExecutionCount,
+            Enabled = item.Enabled,
+        }
+    end
+    return stats
 end
 
 return Scheduler

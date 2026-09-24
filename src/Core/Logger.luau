@@ -1,10 +1,6 @@
 --!strict
-local Logger = {
-    Level = 3, -- 1=TRACE, 2=DEBUG, 3=INFO, 4=WARN, 5=ERROR, 6=FATAL
-    History = {} :: { string },
-    MaxHistory = 100,
-    OnLog = nil :: any,
-}
+local Logger = {}
+Logger.__index = Logger
 
 local LevelNames = {
     [1] = "TRACE",
@@ -14,6 +10,19 @@ local LevelNames = {
     [5] = "ERROR",
     [6] = "FATAL"
 }
+
+function Logger.new(initialLevel: (number | string)?)
+    local self = setmetatable({
+        Level = 3,
+        History = {},
+        MaxHistory = 100,
+        OnLog = nil,
+    }, Logger)
+    if initialLevel then
+        self:SetLevel(initialLevel)
+    end
+    return self
+end
 
 function Logger:SetLevel(level: number | string)
     if type(level) == "string" then
@@ -63,7 +72,7 @@ function Logger:SafeCall(tag: string, fn: (...any) -> ...any, ...: any): (boolea
     if not success then
         local err = tostring(results[2])
         local trace = debug.traceback()
-        self:Error(tag, string.format("Execution Failed: %s\nTrace: %s", err, trace))
+        self:Error(tag, string.format("SafeCall Failed: %s\nTrace: %s", err, trace))
     end
     return table.unpack(results)
 end

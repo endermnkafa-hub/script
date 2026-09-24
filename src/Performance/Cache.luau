@@ -1,36 +1,39 @@
 --!strict
-local Cache = {
-    PlayerCache = {},
-    RaycastCache = {},
-    AnimationCache = {},
-    BaseTTL = 0.08,
-    Stats = {
-        Hits = 0,
-        Misses = 0,
-        Invalidations = 0,
-    },
-}
+local CacheEngine = {}
+CacheEngine.__index = CacheEngine
 
-function Cache:GetPlayerEntry(player: Player): any
+function CacheEngine.new(baseTTL: number?)
+    local self = setmetatable({
+        PlayerCache = {},
+        RaycastCache = {},
+        BaseTTL = baseTTL or 0.08,
+        PlayerStats = { Hits = 0, Misses = 0, Invalidations = 0 },
+        RaycastStats = { Hits = 0, Misses = 0, Invalidations = 0 },
+        _maxRaycastEntries = 200,
+    }, CacheEngine)
+    return self
+end
+
+function CacheEngine:GetPlayerEntry(player: Player): any
     if not player or not player.Parent then return nil end
     local entry = self.PlayerCache[player]
     local now = os.clock()
 
-    -- Adaptive TTL Check
+    -- Adaptive TTL adjustment based on player hitrate
     local ttl = self.BaseTTL
-    local totalReq = self.Stats.Hits + self.Stats.Misses
+    local totalReq = self.PlayerStats.Hits + self.PlayerStats.Misses
     if totalReq > 50 then
-        local hitRate = self.Stats.Hits / totalReq
+        local hitRate = self.PlayerStats.Hits / totalReq
         if hitRate > 0.85 then ttl *= 1.25
         elseif hitRate < 0.40 then ttl *= 0.75 end
     end
 
     if entry and (now - entry.LastCheck) < ttl and entry.Character and entry.Character.Parent then
-        self.Stats.Hits += 1
+        self.PlayerStats.Hits += 1
         return entry
     end
 
-    self.Stats.Misses += 1
+    self.PlayerStats.Misses += 1
     local char = player.Character
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
     local hum = char and char:FindFirstChildWhichIsA("Humanoid")
@@ -51,17 +54,25 @@ function Cache:GetPlayerEntry(player: Player): any
     return entry
 end
 
-function Cache:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { Instance }?): boolean
-    local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z)
+function CacheEngine:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { Instance }?): boolean
+    -- Correct Filter-Aware Hash Key to prevent cache collision across different filter targets
+    local filterHash = 0
+    if filterList then
+        for _, inst in ipairs(filterList) do
+            filterHash += (inst:GetHashCode and inst:GetHashCode() or 1)
+        end
+    end
+
+    local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_%d", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterHash)
     local cached = self.RaycastCache[hash]
     local now = os.clock()
 
     if cached and (now - cached.Time) < 0.04 then
-        self.Stats.Hits += 1
+        self.RaycastStats.Hits += 1
         return cached.Result
     end
 
-    self.Stats.Misses += 1
+    self.RaycastStats.Misses += 1
     local direction = targetPos - origin
     if direction.Magnitude < 0.1 then return true end
 
@@ -89,17 +100,18 @@ function Cache:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { 
     return hasLOS
 end
 
-function Cache:InvalidatePlayer(player: Player)
+function CacheEngine:InvalidatePlayer(player: Player)
     self.PlayerCache[player] = nil
-    self.Stats.Invalidations += 1
+    self.PlayerStats.Invalidations += 1
 end
 
-function Cache:Clear()
+function CacheEngine:Clear()
     table.clear(self.PlayerCache)
     table.clear(self.RaycastCache)
-    table.clear(self.AnimationCache)
-    self.Stats.Hits = 0
-    self.Stats.Misses = 0
+    self.PlayerStats.Hits = 0
+    self.PlayerStats.Misses = 0
+    self.RaycastStats.Hits = 0
+    self.RaycastStats.Misses = 0
 end
 
-return Cache
+return CacheEngine

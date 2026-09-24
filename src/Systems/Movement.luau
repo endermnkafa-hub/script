@@ -1,22 +1,25 @@
 --!strict
-local Cache = require("Performance.Cache")
-local Logger = require("Core.Logger")
-
-local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local Movement = {
-    LastSafePos = nil :: CFrame?,
-    DoubleJumpReady = true,
-}
+local Movement = {}
+Movement.__index = Movement
+
+function Movement.new(deps: { Cache: any, Logger: any })
+    local self = setmetatable({
+        _cache = deps.Cache,
+        _logger = deps.Logger,
+        LastSafePos = nil,
+    }, Movement)
+    return self
+end
 
 function Movement:ToggleFly(enable: boolean, config: any)
     config.Movement.Fly = enable
-    local entry = Cache:GetPlayerEntry(LocalPlayer)
+    local entry = self._cache:GetPlayerEntry(LocalPlayer)
     if not entry or not entry.RootPart or not entry.Humanoid then return end
-
     if enable then
         pcall(function() entry.Humanoid:ChangeState(Enum.HumanoidStateType.Running) end)
     end
@@ -24,7 +27,7 @@ end
 
 function Movement:UpdateFly(dt: number, config: any)
     if not config.Movement.Fly then return end
-    local entry = Cache:GetPlayerEntry(LocalPlayer)
+    local entry = self._cache:GetPlayerEntry(LocalPlayer)
     local cam = Workspace.CurrentCamera
     if not entry or not entry.RootPart or not cam then return end
 
@@ -47,7 +50,7 @@ function Movement:UpdateFly(dt: number, config: any)
 end
 
 function Movement:UpdateSpeed(dt: number, config: any)
-    local entry = Cache:GetPlayerEntry(LocalPlayer)
+    local entry = self._cache:GetPlayerEntry(LocalPlayer)
     if not entry or not entry.Humanoid or not entry.RootPart then return end
 
     if config.Movement.SpeedBoost then
@@ -71,7 +74,7 @@ end
 
 function Movement:UpdateAntiVoid(config: any)
     if not config.Movement.AntiVoid then return end
-    local entry = Cache:GetPlayerEntry(LocalPlayer)
+    local entry = self._cache:GetPlayerEntry(LocalPlayer)
     if not entry or not entry.RootPart or not entry.Humanoid or entry.Humanoid.Health <= 0 then return end
 
     local root = entry.RootPart

@@ -1,15 +1,21 @@
 --!strict
-local Cache = require("Performance.Cache")
-local Combat = require("Systems.Combat")
-
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
-local Skills = {
-    LastSpamTick = 0,
-    SpamIdx = 1,
-    Keys = { Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four },
-}
+local Skills = {}
+Skills.__index = Skills
+
+function Skills.new(deps: { Cache: any, Combat: any, Logger: any })
+    local self = setmetatable({
+        _cache = deps.Cache,
+        _combat = deps.Combat,
+        _logger = deps.Logger,
+        LastSpamTick = 0,
+        SpamIdx = 1,
+        Keys = { Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four },
+    }, Skills)
+    return self
+end
 
 local function SafeKeyClick(keyCode: Enum.KeyCode)
     local vim = nil
@@ -24,10 +30,10 @@ local function SafeKeyClick(keyCode: Enum.KeyCode)
 end
 
 function Skills:OrientToTarget(config: any)
-    local target = Combat.CurrentTarget or Combat:GetTarget(config)
+    local target = self._combat.CurrentTarget or self._combat:GetTarget(config)
     if not target then return end
-    local myEntry = Cache:GetPlayerEntry(LocalPlayer)
-    local tEntry = Cache:GetPlayerEntry(target)
+    local myEntry = self._cache:GetPlayerEntry(LocalPlayer)
+    local tEntry = self._cache:GetPlayerEntry(target)
     if not myEntry or not myEntry.RootPart or not tEntry or not tEntry.RootPart then return end
 
     local myRoot = myEntry.RootPart
@@ -39,7 +45,7 @@ end
 
 function Skills:UpdateAutoSkillSpam(config: any)
     if not config.Skills.AutoSkillSpam and not config.Skills.AutoUltSpam then return end
-    local target = Combat.CurrentTarget or Combat:GetTarget(config)
+    local target = self._combat.CurrentTarget or self._combat:GetTarget(config)
     if not target then return end
 
     if config.Skills.AutoUltSpam then
