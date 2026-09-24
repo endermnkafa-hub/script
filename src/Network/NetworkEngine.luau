@@ -59,13 +59,28 @@ function NetworkEngine:Init()
 end
 
 function NetworkEngine:Unhook()
+    if not self._isHooked then return end
     self._isHooked = false
     self.OutgoingHooked = false
+
+    -- Attempt genuine metamethod restoration if environment supports it
+    pcall(function()
+        if self._oldNamecall then
+            if typeof(hookmetamethod) == "function" then
+                hookmetamethod(game, "__namecall", self._oldNamecall)
+                self._logger:Info("NetworkEngine", "Metamethod Hook restored to original state.")
+            elseif typeof(restorefunction) == "function" then
+                restorefunction(self._oldNamecall)
+            end
+        end
+    end)
 end
 
 function NetworkEngine:Destroy()
     self:Unhook()
     self._oldNamecall = nil
+    self._isHooked = false
+    self.OutgoingHooked = false
 end
 
 function NetworkEngine:SendAction(goalName: string, payload: any?): boolean

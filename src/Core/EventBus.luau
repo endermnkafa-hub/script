@@ -35,6 +35,21 @@ function EventBus:Publish(eventName: string, ...: any)
     end
 end
 
+function EventBus:PublishSync(eventName: string, ...: any)
+    if not self._history[eventName] then
+        self._history[eventName] = {}
+    end
+    local entry = { Timestamp = os.clock(), Data = { ... } }
+    table.insert(self._history[eventName], 1, entry)
+    if #self._history[eventName] > self._maxHistory then
+        table.remove(self._history[eventName])
+    end
+
+    if self._events[eventName] then
+        self._events[eventName]:FireSync(...)
+    end
+end
+
 function EventBus:GetHistory(eventName: string)
     return self._history[eventName] or {}
 end

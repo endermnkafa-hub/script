@@ -152,6 +152,9 @@ function Bootstrap:Init()
     network:Init()
     self._maid:GiveTask(function() network:Destroy() end)
 
+    -- Event-Driven Cache Invalidation connected to Root Maid
+    cache:HookWorkspaceEvents(self._maid)
+
     local combat = container:Get("Combat")
     local movement = container:Get("Movement")
     local survival = container:Get("Survival")
@@ -286,6 +289,36 @@ function Bootstrap:Destroy()
         self._maid = nil
     end
     self._isInitialized = false
+end
+
+function Bootstrap:GetDiagnostics(): { [string]: any }
+    if not self._isInitialized or not self.Container then
+        return { Status = "Uninitialized", Initialized = false }
+    end
+
+    local profiler = self.Container:Get("Profiler")
+    local fsm = self.Container:Get("StateMachine")
+    local featureManager = self.Container:Get("FeatureManager")
+    local cache = self.Container:Get("Cache")
+    local network = self.Container:Get("NetworkEngine")
+
+    return {
+        Status = "Operational",
+        Initialized = true,
+        CurrentState = fsm and fsm.CurrentState or "UNKNOWN",
+        StateHistory = fsm and fsm.TelemetryLogs or {},
+        FeatureStates = featureManager and featureManager.FeatureStates or {},
+        Network = {
+            IsHooked = network and network._isHooked or false,
+            PacketCount = network and network.PacketCount or 0,
+            LastGoal = network and network.LastGoal or nil,
+        },
+        CacheStats = {
+            Player = cache and cache.PlayerStats or {},
+            Raycast = cache and cache.RaycastStats or {},
+        },
+        ProfilerReport = profiler and profiler:GetReport() or {},
+    }
 end
 
 return Bootstrap

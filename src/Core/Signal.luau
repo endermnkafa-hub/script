@@ -51,6 +51,18 @@ function Signal:Fire(...: any)
     end
 end
 
+-- Synchronous Fire: executes callbacks immediately in the calling thread
+function Signal:FireSync(...: any)
+    for connection in pairs(self._listeners) do
+        if connection.Connected and connection._callback then
+            local ok, err = pcall(connection._callback, ...)
+            if not ok then
+                warn(string.format("[Signal] Error in synchronous listener: %s", tostring(err)))
+            end
+        end
+    end
+end
+
 function Signal:Wait(): ...any
     local thread = coroutine.running()
     local conn

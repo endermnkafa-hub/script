@@ -1,7 +1,7 @@
 -- // ========================================================================================
--- // ⚡ 4080 CUSTOM HUB v8.0 - PRODUCTION EXPERT / SPECIALIST FRAMEWORK
+-- // ⚡ 4080 CUSTOM HUB v9.0 - SPECIALIST PRODUCTION FRAMEWORK
 -- // Architecture: Modular Luau Service Architecture + IoC Container + FSM & Telemetry
--- // Built by Universal Bundler Pipeline
+-- // Pipeline: Automated CI/CD Verified Build
 -- // ========================================================================================
 
 local __modules = {}
@@ -33,303 +33,9 @@ local function require(modName)
     return __cache[normalized]
 end
 
--- Module: Bootstrap
-__modules["Bootstrap"] = function()
---!strict
-local ServiceContainer = require("Core.ServiceContainer")
-local Signal = require("Core.Signal")
-local EventBus = require("Core.EventBus")
-local Logger = require("Core.Logger")
-local Maid = require("Core.Maid")
-local Scheduler = require("Core.Scheduler")
-local StateMachine = require("Architecture.StateMachine")
-local FeatureManager = require("Architecture.FeatureManager")
-local Profiler = require("Performance.Profiler")
-local CacheEngine = require("Performance.Cache")
-local ObjectPool = require("Performance.ObjectPool")
-local ConfigManager = require("Config.ConfigManager")
-local NetworkEngine = require("Network.NetworkEngine")
-local RemoteResolver = require("Network.RemoteResolver")
-local Combat = require("Systems.Combat")
-local Movement = require("Systems.Movement")
-local Survival = require("Systems.Survival")
-local Skills = require("Systems.Skills")
-local World = require("Systems.World")
-local Visuals = require("Systems.Visuals")
-local EnemyState = require("Systems.EnemyState")
-local UnitTests = require("Diagnostics.UnitTests")
-local SelfDiagnostics = require("Diagnostics.SelfDiagnostics")
-
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-
-local Bootstrap = {
-    _maid = nil :: any,
-    _isInitialized = false,
-    Container = nil :: any,
-}
-
-function Bootstrap:Init()
-    if self._isInitialized then
-        -- Prevent Duplicate Loops: Destroy previous instance symmetrically
-        self:Destroy()
-    end
-
-    self._maid = Maid.new()
-    self._isInitialized = true
-
-    local logger = Logger.new(3)
-    logger:Info("Bootstrap", "=== 4080 HUB v9.0 PRODUCTION SPECIALIST FRAMEWORK BOOTING ===")
-
-    -- 1. Create Core Instances (Instance-based OOP Architecture)
-    local container = ServiceContainer.new()
-    self.Container = container
-    local eventBus = EventBus.new()
-    local scheduler = Scheduler.new()
-    local profiler = Profiler.new()
-    local cache = CacheEngine.new(0.08)
-    local fsm = StateMachine.new("IDLE", logger)
-    local featureManager = FeatureManager.new(logger, profiler)
-    local configManager = ConfigManager.new(logger)
-    local diagnostics = SelfDiagnostics.new(logger)
-
-    -- 2. Register Core Singletons into IoC Container
-    container:Register("Logger", logger, {})
-    container:Register("EventBus", eventBus, { "Logger" })
-    container:Register("Scheduler", scheduler, { "Logger" })
-    container:Register("Profiler", profiler, {})
-    container:Register("Cache", cache, {})
-    container:Register("StateMachine", fsm, { "Logger" })
-    container:Register("FeatureManager", featureManager, { "Logger", "Profiler" })
-    container:Register("ConfigManager", configManager, { "Logger" })
-    container:Register("Diagnostics", diagnostics, { "Logger" })
-    container:Register("ObjectPool", ObjectPool, {})
-
-    -- 3. Register Systems via True Constructor Dependency Injection with Explicit DAG Dependencies
-    container:Register("RemoteResolver", function(c)
-        return RemoteResolver.new(c:Get("Logger"))
-    end, { "Logger" })
-
-    container:Register("NetworkEngine", function(c)
-        return NetworkEngine.new({
-            Logger = c:Get("Logger"),
-            EventBus = c:Get("EventBus"),
-            RemoteResolver = c:Get("RemoteResolver"),
-        })
-    end, { "Logger", "EventBus", "RemoteResolver" })
-
-    container:Register("EnemyState", function(c)
-        return EnemyState.new({
-            Cache = c:Get("Cache"),
-            EventBus = c:Get("EventBus"),
-            Logger = c:Get("Logger"),
-        })
-    end, { "Cache", "EventBus", "Logger" })
-
-    container:Register("Combat", function(c)
-        return Combat.new({
-            Cache = c:Get("Cache"),
-            EventBus = c:Get("EventBus"),
-            Network = c:Get("NetworkEngine"),
-            EnemyState = c:Get("EnemyState"),
-            Logger = c:Get("Logger"),
-            StateMachine = c:Get("StateMachine"),
-        })
-    end, { "Cache", "EventBus", "NetworkEngine", "EnemyState", "Logger", "StateMachine" })
-
-    container:Register("Movement", function(c)
-        return Movement.new({
-            Cache = c:Get("Cache"),
-            Logger = c:Get("Logger"),
-        })
-    end, { "Cache", "Logger" })
-
-    container:Register("Survival", function(c)
-        return Survival.new({
-            Cache = c:Get("Cache"),
-            StateMachine = c:Get("StateMachine"),
-            EventBus = c:Get("EventBus"),
-            Logger = c:Get("Logger"),
-        })
-    end, { "Cache", "StateMachine", "EventBus", "Logger" })
-
-    container:Register("Skills", function(c)
-        return Skills.new({
-            Cache = c:Get("Cache"),
-            Combat = c:Get("Combat"),
-            Logger = c:Get("Logger"),
-        })
-    end, { "Cache", "Combat", "Logger" })
-
-    container:Register("World", function(c)
-        return World.new({
-            ConfigManager = c:Get("ConfigManager"),
-            Logger = c:Get("Logger"),
-        })
-    end, { "ConfigManager", "Logger" })
-
-    container:Register("Visuals", function(c)
-        return Visuals.new({
-            Cache = c:Get("Cache"),
-            ObjectPool = ObjectPool,
-            Logger = c:Get("Logger"),
-        })
-    end, { "Cache", "ObjectPool", "Logger" })
-
-    -- 4. Run Diagnostics & Automated Unit Tests on Isolated Instances
-    diagnostics:RunHealthCheck()
-    local testsPassed, testResults = UnitTests.RunAll()
-    logger:Info("Bootstrap", string.format("Automated Isolated Test Suite: %s", testsPassed and "100% PASSED" or "TESTS FAILED"))
-
-    -- 5. Topological DAG Resolution of All Systems
-    local initOrder = container:ResolveAllInOrder()
-    logger:Info("Bootstrap", string.format("DAG Resolution Complete. Initialized %d services in topological order.", #initOrder))
-
-    local network = container:Get("NetworkEngine")
-    network:Init()
-    self._maid:GiveTask(function() network:Destroy() end)
-
-    local combat = container:Get("Combat")
-    local movement = container:Get("Movement")
-    local survival = container:Get("Survival")
-    local skills = container:Get("Skills")
-    local world = container:Get("World")
-    local visuals = container:Get("Visuals")
-    local enemyState = container:Get("EnemyState")
-
-    -- 6. Load Config
-    configManager:Load()
-
-    -- 7. Active Scheduler Tasks Registration (Tiered Frequencies)
-    scheduler:Register("Aimlock_Fast", "Fast", function(dt)
-        combat:UpdateAimlock(configManager.Config)
-    end)
-
-    scheduler:Register("EnemyState_Normal", "Normal", function(dt)
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= Players.LocalPlayer then
-                enemyState:Update(p)
-            end
-        end
-    end)
-
-    scheduler:Register("WorldHop_Slow", "Slow", function(dt)
-        world:CheckAutoServerHop(configManager.Config)
-    end)
-
-    scheduler:Register("Telemetry_Slow", "Slow", function(dt)
-        profiler:UpdateSystemMetrics()
-    end)
-
-    scheduler:Register("ConfigAutosave_Background", "Background", function(dt)
-        configManager:Save()
-    end)
-
-    -- 8. Register and Validate Feature Pipelines
-    featureManager:Register({
-        Name = "FlyMovement",
-        Phase = "RenderStepped",
-        Priority = 90,
-        Budget = 1.0,
-        Dependencies = { "Movement", "Cache" },
-        Enabled = true,
-        Update = function(self, dt, ctx) movement:UpdateFly(dt, configManager.Config) end
-    })
-
-    featureManager:Register({
-        Name = "CombatEngine",
-        Phase = "Heartbeat",
-        Priority = 100,
-        Budget = 2.0,
-        Dependencies = { "Combat", "Cache", "EnemyState" },
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            combat:UpdateAutoM1(configManager.Config)
-            combat:UpdateAutoBlock(configManager.Config)
-            combat:UpdateHitboxExpander(configManager.Config)
-        end
-    })
-
-    featureManager:Register({
-        Name = "MovementEngine",
-        Phase = "Heartbeat",
-        Priority = 90,
-        Budget = 1.0,
-        Dependencies = { "Movement" },
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            movement:UpdateSpeed(dt, configManager.Config)
-            movement:UpdateAntiVoid(configManager.Config)
-        end
-    })
-
-    featureManager:Register({
-        Name = "SurvivalEngine",
-        Phase = "Heartbeat",
-        Priority = 85,
-        Budget = 1.5,
-        Dependencies = { "Survival", "StateMachine" },
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            survival:UpdateSkyDodge(dt, configManager.Config)
-            survival:CheckSkyEscape(configManager.Config)
-        end
-    })
-
-    featureManager:Register({
-        Name = "VisualsEngine",
-        Phase = "Heartbeat",
-        Priority = 70,
-        Budget = 2.0,
-        Dependencies = { "Visuals", "Cache" },
-        Enabled = true,
-        Update = function(self, dt, ctx)
-            visuals:Update(configManager.Config)
-        end
-    })
-
-    -- Validate all feature dependencies in DI container
-    local depsOk, depReport = featureManager:ValidateDependencies(container)
-    logger:Info("Bootstrap", string.format("Feature Dependency Graph: %s", depsOk and "ALL SATISFIED" or "DEGRADED ISOLATION ACTIVE"))
-
-    featureManager:InitAll(container)
-    self._maid:GiveTask(function() featureManager:DestroyAll() end)
-
-    -- 9. Connect Game Loop Pipelines & Store Connections in Root Maid
-    local rsConn = RunService.RenderStepped:Connect(function(dt)
-        featureManager:ExecutePipeline("RenderStepped", dt, container)
-    end)
-    self._maid:GiveTask(rsConn)
-
-    local stConn = RunService.Stepped:Connect(function()
-        movement:UpdateNoclip(configManager.Config)
-        featureManager:ExecutePipeline("Stepped", 1/60, container)
-    end)
-    self._maid:GiveTask(stConn)
-
-    local hbConn = RunService.Heartbeat:Connect(function(dt)
-        fsm:Update(dt, container)
-        scheduler:Step(dt)
-        featureManager:ExecutePipeline("Heartbeat", dt, container)
-    end)
-    self._maid:GiveTask(hbConn)
-
-    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (SPECIALIST PRODUCTION ARCHITECTURE) ===")
-end
-
-function Bootstrap:Destroy()
-    if self._maid then
-        self._maid:DoCleaning()
-        self._maid = nil
-    end
-    self._isInitialized = false
-end
-
-return Bootstrap
-
-end
-
+-- ============================================================================
 -- Module: Architecture.FeatureManager
+-- ============================================================================
 __modules["Architecture.FeatureManager"] = function()
 --!strict
 local Maid = require("Core.Maid")
@@ -514,7 +220,9 @@ return FeatureManager
 end
 __modules["Architecture/FeatureManager"] = __modules["Architecture.FeatureManager"]
 
+-- ============================================================================
 -- Module: Architecture.StateMachine
+-- ============================================================================
 __modules["Architecture.StateMachine"] = function()
 --!strict
 local Signal = require("Core.Signal")
@@ -756,7 +464,340 @@ return StateMachine
 end
 __modules["Architecture/StateMachine"] = __modules["Architecture.StateMachine"]
 
+-- ============================================================================
+-- Module: Bootstrap
+-- ============================================================================
+__modules["Bootstrap"] = function()
+--!strict
+local ServiceContainer = require("Core.ServiceContainer")
+local Signal = require("Core.Signal")
+local EventBus = require("Core.EventBus")
+local Logger = require("Core.Logger")
+local Maid = require("Core.Maid")
+local Scheduler = require("Core.Scheduler")
+local StateMachine = require("Architecture.StateMachine")
+local FeatureManager = require("Architecture.FeatureManager")
+local Profiler = require("Performance.Profiler")
+local CacheEngine = require("Performance.Cache")
+local ObjectPool = require("Performance.ObjectPool")
+local ConfigManager = require("Config.ConfigManager")
+local NetworkEngine = require("Network.NetworkEngine")
+local RemoteResolver = require("Network.RemoteResolver")
+local Combat = require("Systems.Combat")
+local Movement = require("Systems.Movement")
+local Survival = require("Systems.Survival")
+local Skills = require("Systems.Skills")
+local World = require("Systems.World")
+local Visuals = require("Systems.Visuals")
+local EnemyState = require("Systems.EnemyState")
+local UnitTests = require("Diagnostics.UnitTests")
+local SelfDiagnostics = require("Diagnostics.SelfDiagnostics")
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+local Bootstrap = {
+    _maid = nil :: any,
+    _isInitialized = false,
+    Container = nil :: any,
+}
+
+function Bootstrap:Init()
+    if self._isInitialized then
+        -- Prevent Duplicate Loops: Destroy previous instance symmetrically
+        self:Destroy()
+    end
+
+    self._maid = Maid.new()
+    self._isInitialized = true
+
+    local logger = Logger.new(3)
+    logger:Info("Bootstrap", "=== 4080 HUB v9.0 PRODUCTION SPECIALIST FRAMEWORK BOOTING ===")
+
+    -- 1. Create Core Instances (Instance-based OOP Architecture)
+    local container = ServiceContainer.new()
+    self.Container = container
+    local eventBus = EventBus.new()
+    local scheduler = Scheduler.new()
+    local profiler = Profiler.new()
+    local cache = CacheEngine.new(0.08)
+    local fsm = StateMachine.new("IDLE", logger)
+    local featureManager = FeatureManager.new(logger, profiler)
+    local configManager = ConfigManager.new(logger)
+    local diagnostics = SelfDiagnostics.new(logger)
+
+    -- 2. Register Core Singletons into IoC Container
+    container:Register("Logger", logger, {})
+    container:Register("EventBus", eventBus, { "Logger" })
+    container:Register("Scheduler", scheduler, { "Logger" })
+    container:Register("Profiler", profiler, {})
+    container:Register("Cache", cache, {})
+    container:Register("StateMachine", fsm, { "Logger" })
+    container:Register("FeatureManager", featureManager, { "Logger", "Profiler" })
+    container:Register("ConfigManager", configManager, { "Logger" })
+    container:Register("Diagnostics", diagnostics, { "Logger" })
+    container:Register("ObjectPool", ObjectPool, {})
+
+    -- 3. Register Systems via True Constructor Dependency Injection with Explicit DAG Dependencies
+    container:Register("RemoteResolver", function(c)
+        return RemoteResolver.new(c:Get("Logger"))
+    end, { "Logger" })
+
+    container:Register("NetworkEngine", function(c)
+        return NetworkEngine.new({
+            Logger = c:Get("Logger"),
+            EventBus = c:Get("EventBus"),
+            RemoteResolver = c:Get("RemoteResolver"),
+        })
+    end, { "Logger", "EventBus", "RemoteResolver" })
+
+    container:Register("EnemyState", function(c)
+        return EnemyState.new({
+            Cache = c:Get("Cache"),
+            EventBus = c:Get("EventBus"),
+            Logger = c:Get("Logger"),
+        })
+    end, { "Cache", "EventBus", "Logger" })
+
+    container:Register("Combat", function(c)
+        return Combat.new({
+            Cache = c:Get("Cache"),
+            EventBus = c:Get("EventBus"),
+            Network = c:Get("NetworkEngine"),
+            EnemyState = c:Get("EnemyState"),
+            Logger = c:Get("Logger"),
+            StateMachine = c:Get("StateMachine"),
+        })
+    end, { "Cache", "EventBus", "NetworkEngine", "EnemyState", "Logger", "StateMachine" })
+
+    container:Register("Movement", function(c)
+        return Movement.new({
+            Cache = c:Get("Cache"),
+            Logger = c:Get("Logger"),
+        })
+    end, { "Cache", "Logger" })
+
+    container:Register("Survival", function(c)
+        return Survival.new({
+            Cache = c:Get("Cache"),
+            StateMachine = c:Get("StateMachine"),
+            EventBus = c:Get("EventBus"),
+            Logger = c:Get("Logger"),
+        })
+    end, { "Cache", "StateMachine", "EventBus", "Logger" })
+
+    container:Register("Skills", function(c)
+        return Skills.new({
+            Cache = c:Get("Cache"),
+            Combat = c:Get("Combat"),
+            Logger = c:Get("Logger"),
+        })
+    end, { "Cache", "Combat", "Logger" })
+
+    container:Register("World", function(c)
+        return World.new({
+            ConfigManager = c:Get("ConfigManager"),
+            Logger = c:Get("Logger"),
+        })
+    end, { "ConfigManager", "Logger" })
+
+    container:Register("Visuals", function(c)
+        return Visuals.new({
+            Cache = c:Get("Cache"),
+            ObjectPool = ObjectPool,
+            Logger = c:Get("Logger"),
+        })
+    end, { "Cache", "ObjectPool", "Logger" })
+
+    -- 4. Run Diagnostics & Automated Unit Tests on Isolated Instances
+    diagnostics:RunHealthCheck()
+    local testsPassed, testResults = UnitTests.RunAll()
+    logger:Info("Bootstrap", string.format("Automated Isolated Test Suite: %s", testsPassed and "100% PASSED" or "TESTS FAILED"))
+
+    -- 5. Topological DAG Resolution of All Systems
+    local initOrder = container:ResolveAllInOrder()
+    logger:Info("Bootstrap", string.format("DAG Resolution Complete. Initialized %d services in topological order.", #initOrder))
+
+    local network = container:Get("NetworkEngine")
+    network:Init()
+    self._maid:GiveTask(function() network:Destroy() end)
+
+    -- Event-Driven Cache Invalidation connected to Root Maid
+    cache:HookWorkspaceEvents(self._maid)
+
+    local combat = container:Get("Combat")
+    local movement = container:Get("Movement")
+    local survival = container:Get("Survival")
+    local skills = container:Get("Skills")
+    local world = container:Get("World")
+    local visuals = container:Get("Visuals")
+    local enemyState = container:Get("EnemyState")
+
+    -- 6. Load Config
+    configManager:Load()
+
+    -- 7. Active Scheduler Tasks Registration (Tiered Frequencies)
+    scheduler:Register("Aimlock_Fast", "Fast", function(dt)
+        combat:UpdateAimlock(configManager.Config)
+    end)
+
+    scheduler:Register("EnemyState_Normal", "Normal", function(dt)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= Players.LocalPlayer then
+                enemyState:Update(p)
+            end
+        end
+    end)
+
+    scheduler:Register("WorldHop_Slow", "Slow", function(dt)
+        world:CheckAutoServerHop(configManager.Config)
+    end)
+
+    scheduler:Register("Telemetry_Slow", "Slow", function(dt)
+        profiler:UpdateSystemMetrics()
+    end)
+
+    scheduler:Register("ConfigAutosave_Background", "Background", function(dt)
+        configManager:Save()
+    end)
+
+    -- 8. Register and Validate Feature Pipelines
+    featureManager:Register({
+        Name = "FlyMovement",
+        Phase = "RenderStepped",
+        Priority = 90,
+        Budget = 1.0,
+        Dependencies = { "Movement", "Cache" },
+        Enabled = true,
+        Update = function(self, dt, ctx) movement:UpdateFly(dt, configManager.Config) end
+    })
+
+    featureManager:Register({
+        Name = "CombatEngine",
+        Phase = "Heartbeat",
+        Priority = 100,
+        Budget = 2.0,
+        Dependencies = { "Combat", "Cache", "EnemyState" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            combat:UpdateAutoM1(configManager.Config)
+            combat:UpdateAutoBlock(configManager.Config)
+            combat:UpdateHitboxExpander(configManager.Config)
+        end
+    })
+
+    featureManager:Register({
+        Name = "MovementEngine",
+        Phase = "Heartbeat",
+        Priority = 90,
+        Budget = 1.0,
+        Dependencies = { "Movement" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            movement:UpdateSpeed(dt, configManager.Config)
+            movement:UpdateAntiVoid(configManager.Config)
+        end
+    })
+
+    featureManager:Register({
+        Name = "SurvivalEngine",
+        Phase = "Heartbeat",
+        Priority = 85,
+        Budget = 1.5,
+        Dependencies = { "Survival", "StateMachine" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            survival:UpdateSkyDodge(dt, configManager.Config)
+            survival:CheckSkyEscape(configManager.Config)
+        end
+    })
+
+    featureManager:Register({
+        Name = "VisualsEngine",
+        Phase = "Heartbeat",
+        Priority = 70,
+        Budget = 2.0,
+        Dependencies = { "Visuals", "Cache" },
+        Enabled = true,
+        Update = function(self, dt, ctx)
+            visuals:Update(configManager.Config)
+        end
+    })
+
+    -- Validate all feature dependencies in DI container
+    local depsOk, depReport = featureManager:ValidateDependencies(container)
+    logger:Info("Bootstrap", string.format("Feature Dependency Graph: %s", depsOk and "ALL SATISFIED" or "DEGRADED ISOLATION ACTIVE"))
+
+    featureManager:InitAll(container)
+    self._maid:GiveTask(function() featureManager:DestroyAll() end)
+
+    -- 9. Connect Game Loop Pipelines & Store Connections in Root Maid
+    local rsConn = RunService.RenderStepped:Connect(function(dt)
+        featureManager:ExecutePipeline("RenderStepped", dt, container)
+    end)
+    self._maid:GiveTask(rsConn)
+
+    local stConn = RunService.Stepped:Connect(function()
+        movement:UpdateNoclip(configManager.Config)
+        featureManager:ExecutePipeline("Stepped", 1/60, container)
+    end)
+    self._maid:GiveTask(stConn)
+
+    local hbConn = RunService.Heartbeat:Connect(function(dt)
+        fsm:Update(dt, container)
+        scheduler:Step(dt)
+        featureManager:ExecutePipeline("Heartbeat", dt, container)
+    end)
+    self._maid:GiveTask(hbConn)
+
+    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (SPECIALIST PRODUCTION ARCHITECTURE) ===")
+end
+
+function Bootstrap:Destroy()
+    if self._maid then
+        self._maid:DoCleaning()
+        self._maid = nil
+    end
+    self._isInitialized = false
+end
+
+function Bootstrap:GetDiagnostics(): { [string]: any }
+    if not self._isInitialized or not self.Container then
+        return { Status = "Uninitialized", Initialized = false }
+    end
+
+    local profiler = self.Container:Get("Profiler")
+    local fsm = self.Container:Get("StateMachine")
+    local featureManager = self.Container:Get("FeatureManager")
+    local cache = self.Container:Get("Cache")
+    local network = self.Container:Get("NetworkEngine")
+
+    return {
+        Status = "Operational",
+        Initialized = true,
+        CurrentState = fsm and fsm.CurrentState or "UNKNOWN",
+        StateHistory = fsm and fsm.TelemetryLogs or {},
+        FeatureStates = featureManager and featureManager.FeatureStates or {},
+        Network = {
+            IsHooked = network and network._isHooked or false,
+            PacketCount = network and network.PacketCount or 0,
+            LastGoal = network and network.LastGoal or nil,
+        },
+        CacheStats = {
+            Player = cache and cache.PlayerStats or {},
+            Raycast = cache and cache.RaycastStats or {},
+        },
+        ProfilerReport = profiler and profiler:GetReport() or {},
+    }
+end
+
+return Bootstrap
+
+end
+
+-- ============================================================================
 -- Module: Config.ConfigManager
+-- ============================================================================
 __modules["Config.ConfigManager"] = function()
 --!strict
 local ConfigSchema = require("Config.ConfigSchema")
@@ -819,7 +860,11 @@ function ConfigManager:ValidateAndClamp(data: any): any
                             data[catName][key] = spec.Default
                         end
                     elseif spec.Type == "EnumItem" then
-                        if typeof(val) ~= "EnumItem" then
+                        if typeof(val) == "EnumItem" then
+                            if spec.EnumType and val.EnumType ~= spec.EnumType then
+                                data[catName][key] = spec.Default
+                            end
+                        else
                             data[catName][key] = spec.Default
                         end
                     end
@@ -932,7 +977,9 @@ return ConfigManager
 end
 __modules["Config/ConfigManager"] = __modules["Config.ConfigManager"]
 
+-- ============================================================================
 -- Module: Config.ConfigSchema
+-- ============================================================================
 __modules["Config.ConfigSchema"] = function()
 --!strict
 local ConfigSchema = {
@@ -1020,14 +1067,14 @@ local ConfigSchema = {
         AccentName         = { Type = "string",  Default = "Cyan Neon" },
     },
     Keybinds = {
-        ToggleGUI          = { Type = "EnumItem", Default = Enum.KeyCode.RightControl },
-        ToggleFly          = { Type = "EnumItem", Default = Enum.KeyCode.F5 },
-        ToggleNoclip       = { Type = "EnumItem", Default = Enum.KeyCode.F6 },
-        ToggleAimlock      = { Type = "EnumItem", Default = Enum.KeyCode.F7 },
-        ToggleBehindTP     = { Type = "EnumItem", Default = Enum.KeyCode.F9 },
-        ToggleSkyDodge     = { Type = "EnumItem", Default = Enum.KeyCode.H },
-        EmergencyStop      = { Type = "EnumItem", Default = Enum.KeyCode.Delete },
-        MassBringKey       = { Type = "EnumItem", Default = Enum.KeyCode.G },
+        ToggleGUI          = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.RightControl },
+        ToggleFly          = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F5 },
+        ToggleNoclip       = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F6 },
+        ToggleAimlock      = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F7 },
+        ToggleBehindTP     = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F9 },
+        ToggleSkyDodge     = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.H },
+        EmergencyStop      = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.Delete },
+        MassBringKey       = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.G },
     }
 }
 
@@ -1036,7 +1083,9 @@ return ConfigSchema
 end
 __modules["Config/ConfigSchema"] = __modules["Config.ConfigSchema"]
 
+-- ============================================================================
 -- Module: Core.EventBus
+-- ============================================================================
 __modules["Core.EventBus"] = function()
 --!strict
 local Signal = require("Core.Signal")
@@ -1075,6 +1124,21 @@ function EventBus:Publish(eventName: string, ...: any)
     end
 end
 
+function EventBus:PublishSync(eventName: string, ...: any)
+    if not self._history[eventName] then
+        self._history[eventName] = {}
+    end
+    local entry = { Timestamp = os.clock(), Data = { ... } }
+    table.insert(self._history[eventName], 1, entry)
+    if #self._history[eventName] > self._maxHistory then
+        table.remove(self._history[eventName])
+    end
+
+    if self._events[eventName] then
+        self._events[eventName]:FireSync(...)
+    end
+end
+
 function EventBus:GetHistory(eventName: string)
     return self._history[eventName] or {}
 end
@@ -1092,7 +1156,9 @@ return EventBus
 end
 __modules["Core/EventBus"] = __modules["Core.EventBus"]
 
+-- ============================================================================
 -- Module: Core.Logger
+-- ============================================================================
 __modules["Core.Logger"] = function()
 --!strict
 local Logger = {}
@@ -1178,7 +1244,9 @@ return Logger
 end
 __modules["Core/Logger"] = __modules["Core.Logger"]
 
+-- ============================================================================
 -- Module: Core.Maid
+-- ============================================================================
 __modules["Core.Maid"] = function()
 --!strict
 local Maid = {}
@@ -1231,7 +1299,9 @@ return Maid
 end
 __modules["Core/Maid"] = __modules["Core.Maid"]
 
+-- ============================================================================
 -- Module: Core.Scheduler
+-- ============================================================================
 __modules["Core.Scheduler"] = function()
 --!strict
 local Scheduler = {}
@@ -1306,7 +1376,9 @@ return Scheduler
 end
 __modules["Core/Scheduler"] = __modules["Core.Scheduler"]
 
+-- ============================================================================
 -- Module: Core.ServiceContainer
+-- ============================================================================
 __modules["Core.ServiceContainer"] = function()
 --!strict
 local ServiceContainer = {}
@@ -1378,38 +1450,77 @@ function ServiceContainer:BuildGraph(): { [string]: { string } }
     return graph
 end
 
+-- Kahn's Algorithm / Topological Sort for Dependency Graph
+-- Resolves services in dependency-first order and detects any cyclic dependencies
 function ServiceContainer:TopologicalSort(): ({ string }, boolean, string?)
-    local visited = {}
-    local recStack = {}
-    local order = {}
-    local hasCycle = false
-    local cycleNode = nil
+    local inDegree = {}
+    local adjList = {}
+    local allNodes = {}
 
-    local function dfs(node: string)
-        if recStack[node] then
-            hasCycle = true
-            cycleNode = node
-            return
+    -- Collect all registered nodes
+    for name, _ in pairs(self._dependencies) do
+        allNodes[name] = true
+        inDegree[name] = 0
+        adjList[name] = {}
+    end
+    for name, _ in pairs(self._services) do
+        if not allNodes[name] then
+            allNodes[name] = true
+            inDegree[name] = 0
+            adjList[name] = {}
         end
-        if visited[node] then return end
-
-        visited[node] = true
-        recStack[node] = true
-
-        local deps = self._dependencies[node] or {}
-        for _, dep in ipairs(deps) do
-            if self:Has(dep) then
-                dfs(dep)
-            end
+    end
+    for name, _ in pairs(self._factories) do
+        if not allNodes[name] then
+            allNodes[name] = true
+            inDegree[name] = 0
+            adjList[name] = {}
         end
-
-        recStack[node] = false
-        table.insert(order, node)
     end
 
-    for name, _ in pairs(self._dependencies) do
-        if not visited[name] then
-            dfs(name)
+    -- Build adjacency list: if A depends on B, edge is B -> A (B must resolve before A)
+    for node, deps in pairs(self._dependencies) do
+        for _, dep in ipairs(deps) do
+            if allNodes[dep] then
+                table.insert(adjList[dep], node)
+                inDegree[node] = (inDegree[node] or 0) + 1
+            end
+        end
+    end
+
+    -- Queue for nodes with in-degree 0 (no unresolved dependencies)
+    local queue = {}
+    for node, deg in pairs(inDegree) do
+        if deg == 0 then
+            table.insert(queue, node)
+        end
+    end
+
+    local order = {}
+    while #queue > 0 do
+        local curr = table.remove(queue, 1)
+        table.insert(order, curr)
+
+        for _, neighbor in ipairs(adjList[curr] or {}) do
+            inDegree[neighbor] -= 1
+            if inDegree[neighbor] == 0 then
+                table.insert(queue, neighbor)
+            end
+        end
+    end
+
+    -- If order contains all nodes, no cycles exist; otherwise a cycle was detected
+    local totalCount = 0
+    for _ in pairs(allNodes) do totalCount += 1 end
+
+    local hasCycle = (#order < totalCount)
+    local cycleNode = nil
+    if hasCycle then
+        for node, deg in pairs(inDegree) do
+            if deg > 0 then
+                cycleNode = node
+                break
+            end
         end
     end
 
@@ -1433,7 +1544,9 @@ return ServiceContainer
 end
 __modules["Core/ServiceContainer"] = __modules["Core.ServiceContainer"]
 
+-- ============================================================================
 -- Module: Core.Signal
+-- ============================================================================
 __modules["Core.Signal"] = function()
 --!strict
 local Signal = {}
@@ -1488,6 +1601,18 @@ function Signal:Fire(...: any)
     end
 end
 
+-- Synchronous Fire: executes callbacks immediately in the calling thread
+function Signal:FireSync(...: any)
+    for connection in pairs(self._listeners) do
+        if connection.Connected and connection._callback then
+            local ok, err = pcall(connection._callback, ...)
+            if not ok then
+                warn(string.format("[Signal] Error in synchronous listener: %s", tostring(err)))
+            end
+        end
+    end
+end
+
 function Signal:Wait(): ...any
     local thread = coroutine.running()
     local conn
@@ -1515,7 +1640,9 @@ return Signal
 end
 __modules["Core/Signal"] = __modules["Core.Signal"]
 
+-- ============================================================================
 -- Module: Diagnostics.SelfDiagnostics
+-- ============================================================================
 __modules["Diagnostics.SelfDiagnostics"] = function()
 --!strict
 local SelfDiagnostics = {}
@@ -1579,7 +1706,9 @@ return SelfDiagnostics
 end
 __modules["Diagnostics/SelfDiagnostics"] = __modules["Diagnostics.SelfDiagnostics"]
 
+-- ============================================================================
 -- Module: Diagnostics.UnitTests
+-- ============================================================================
 __modules["Diagnostics.UnitTests"] = function()
 --!strict
 local Signal = require("Core.Signal")
@@ -1601,24 +1730,24 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     local results = {}
     local logger = Logger.new(3)
 
-    -- 1. Signal Test
+    -- 1. Deterministic Signal Test (Synchronous & Async)
     local sig = Signal.new()
     local sigVal = nil
     local conn = sig:Connect(function(v) sigVal = v end)
-    sig:Fire(42)
+    sig:FireSync(42) -- Deterministic immediate dispatch
     conn:Disconnect()
-    sig:Fire(99)
+    sig:FireSync(99)
     sig:Destroy()
-    results["SignalTest"] = (sigVal == 42)
+    results["Signal_DeterministicSyncTest"] = (sigVal == 42)
 
-    -- 2. EventBus Test
+    -- 2. Deterministic EventBus Test
     local eb = EventBus.new()
     local ebReceived = false
     local ebConn = eb:Subscribe("Test.Event", function(d) if d == "OK" then ebReceived = true end end)
-    eb:Publish("Test.Event", "OK")
+    eb:PublishSync("Test.Event", "OK")
     ebConn:Disconnect()
     eb:Clear()
-    results["EventBusTest"] = ebReceived
+    results["EventBus_DeterministicSyncTest"] = ebReceived
 
     -- 3. Maid Resource Cleanup Test
     local maid = Maid.new()
@@ -1649,13 +1778,13 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     sched:Step(0.0166)
     results["Scheduler_60HzTest"] = (schedCount == 1)
 
-    -- 6. ServiceContainer True Factory DI & DAG Topological Sort Test
+    -- 6. ServiceContainer True Factory DI & Kahn's DAG Topological Sort Test
     local container = ServiceContainer.new()
     container:Register("ServiceA", function(c) return { Name = "A" } end, {})
     container:Register("ServiceB", function(c) return { Dep = c:Get("ServiceA") } end, { "ServiceA" })
     local order, noCycles = container:TopologicalSort()
     local resolvedB = container:Get("ServiceB")
-    results["DependencyGraph_TopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
+    results["DependencyGraph_KahnTopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
 
     -- 7. ObjectPool Double-Release Guard & Telemetry Test
     local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2, 10)
@@ -1666,14 +1795,15 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     results["ObjectPool_DoubleReleaseGuardTest"] = (item.active == false and telem.InvalidReleases == 1 and telem.AcquireCount == 1)
     pool:Destroy()
 
-    -- 8. Cache Weak-Key Instance ID Map Test
+    -- 8. Cache Weak-Key Instance ID Map & Invalidation Test
     local cache = CacheEngine.new(0.08)
     cache:Clear()
     local partA = Instance.new("Part")
     local partB = Instance.new("Part")
     local los1 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partA })
     local los2 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partB })
-    results["Cache_WeakKeyFilterHashTest"] = (cache.RaycastStats.Misses == 2)
+    cache:InvalidateRaycasts()
+    results["Cache_WeakKeyAndInvalidationTest"] = (cache.RaycastStats.Misses == 2 and cache.RaycastStats.Invalidations == 1)
     partA:Destroy()
     partB:Destroy()
 
@@ -1685,14 +1815,18 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     local metric = profiler.Metrics["BudgetTask"]
     results["Profiler_HysteresisTest"] = (metric and metric.Status == "OVER_BUDGET")
 
-    -- 10. Config EnumItem Runtime Validation Test
+    -- 10. Config Strict EnumFamily & Clamping Runtime Validation Test
     local cfg = ConfigManager.new(logger)
     local dirtyData = {
         World = { FOVValue = 99999 },
-        Keybinds = { ToggleFly = "CorruptedString" } -- Should reset to Default Enum.KeyCode.F5
+        Keybinds = {
+            ToggleFly = "CorruptedString",         -- String -> Default Enum.KeyCode.F5
+            ToggleAimlock = Enum.Material.Plastic, -- Wrong Enum Family -> Default Enum.KeyCode.F7
+        }
     }
     cfg:ValidateAndClamp(dirtyData)
-    results["Config_EnumValidationTest"] = (dirtyData.World.FOVValue == 120 and typeof(dirtyData.Keybinds.ToggleFly) == "EnumItem")
+    local isEnumCorrect = (dirtyData.Keybinds.ToggleFly == Enum.KeyCode.F5 and dirtyData.Keybinds.ToggleAimlock == Enum.KeyCode.F7)
+    results["Config_StrictEnumFamilyValidationTest"] = (dirtyData.World.FOVValue == 120 and isEnumCorrect)
 
     local allPassed = true
     for name, passed in pairs(results) do
@@ -1712,7 +1846,9 @@ return UnitTests
 end
 __modules["Diagnostics/UnitTests"] = __modules["Diagnostics.UnitTests"]
 
+-- ============================================================================
 -- Module: Network.NetworkEngine
+-- ============================================================================
 __modules["Network.NetworkEngine"] = function()
 --!strict
 local NetworkEngine = {}
@@ -1775,13 +1911,28 @@ function NetworkEngine:Init()
 end
 
 function NetworkEngine:Unhook()
+    if not self._isHooked then return end
     self._isHooked = false
     self.OutgoingHooked = false
+
+    -- Attempt genuine metamethod restoration if environment supports it
+    pcall(function()
+        if self._oldNamecall then
+            if typeof(hookmetamethod) == "function" then
+                hookmetamethod(game, "__namecall", self._oldNamecall)
+                self._logger:Info("NetworkEngine", "Metamethod Hook restored to original state.")
+            elseif typeof(restorefunction) == "function" then
+                restorefunction(self._oldNamecall)
+            end
+        end
+    end)
 end
 
 function NetworkEngine:Destroy()
     self:Unhook()
     self._oldNamecall = nil
+    self._isHooked = false
+    self.OutgoingHooked = false
 end
 
 function NetworkEngine:SendAction(goalName: string, payload: any?): boolean
@@ -1800,7 +1951,9 @@ return NetworkEngine
 end
 __modules["Network/NetworkEngine"] = __modules["Network.NetworkEngine"]
 
+-- ============================================================================
 -- Module: Network.RemoteResolver
+-- ============================================================================
 __modules["Network.RemoteResolver"] = function()
 --!strict
 local RemoteResolver = {}
@@ -1845,7 +1998,9 @@ return RemoteResolver
 end
 __modules["Network/RemoteResolver"] = __modules["Network.RemoteResolver"]
 
+-- ============================================================================
 -- Module: Performance.Cache
+-- ============================================================================
 __modules["Performance.Cache"] = function()
 --!strict
 local CacheEngine = {}
@@ -1965,6 +2120,50 @@ end
 function CacheEngine:InvalidatePlayer(player: Player)
     self.PlayerCache[player] = nil
     self.PlayerStats.Invalidations += 1
+    self:InvalidateRaycasts()
+end
+
+function CacheEngine:InvalidateRaycasts()
+    table.clear(self.RaycastCache)
+    self.RaycastStats.Invalidations += 1
+end
+
+-- Event-driven cache invalidation for workspace topology changes & player lifecycle
+function CacheEngine:HookWorkspaceEvents(maid: any)
+    if not maid then return end
+
+    local lastGeomInvalidate = 0
+    local function onTopologyChange()
+        local now = os.clock()
+        if (now - lastGeomInvalidate) > 0.1 then -- Debounced invalidation (max 10 Hz)
+            lastGeomInvalidate = now
+            table.clear(self.RaycastCache)
+            self.RaycastStats.Invalidations += 1
+        end
+    end
+
+    local Players = game:GetService("Players")
+
+    pcall(function()
+        maid:GiveTask(workspace.DescendantAdded:Connect(onTopologyChange))
+        maid:GiveTask(workspace.DescendantRemoving:Connect(onTopologyChange))
+
+        maid:GiveTask(Players.PlayerRemoving:Connect(function(player)
+            self:InvalidatePlayer(player)
+        end))
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            maid:GiveTask(player.CharacterRemoving:Connect(function()
+                self:InvalidatePlayer(player)
+            end))
+        end
+
+        maid:GiveTask(Players.PlayerAdded:Connect(function(player)
+            maid:GiveTask(player.CharacterRemoving:Connect(function()
+                self:InvalidatePlayer(player)
+            end))
+        end))
+    end)
 end
 
 function CacheEngine:Clear()
@@ -1981,7 +2180,9 @@ return CacheEngine
 end
 __modules["Performance/Cache"] = __modules["Performance.Cache"]
 
+-- ============================================================================
 -- Module: Performance.ObjectPool
+-- ============================================================================
 __modules["Performance.ObjectPool"] = function()
 --!strict
 local ObjectPool = {}
@@ -2094,7 +2295,9 @@ return ObjectPool
 end
 __modules["Performance/ObjectPool"] = __modules["Performance.ObjectPool"]
 
+-- ============================================================================
 -- Module: Performance.Profiler
+-- ============================================================================
 __modules["Performance.Profiler"] = function()
 --!strict
 local Profiler = {}
@@ -2198,7 +2401,9 @@ return Profiler
 end
 __modules["Performance/Profiler"] = __modules["Performance.Profiler"]
 
+-- ============================================================================
 -- Module: Systems.Combat
+-- ============================================================================
 __modules["Systems.Combat"] = function()
 --!strict
 local Players = game:GetService("Players")
@@ -2409,7 +2614,9 @@ return Combat
 end
 __modules["Systems/Combat"] = __modules["Systems.Combat"]
 
+-- ============================================================================
 -- Module: Systems.EnemyState
+-- ============================================================================
 __modules["Systems.EnemyState"] = function()
 --!strict
 export type EnemyData = {
@@ -2497,7 +2704,9 @@ return EnemyState
 end
 __modules["Systems/EnemyState"] = __modules["Systems.EnemyState"]
 
+-- ============================================================================
 -- Module: Systems.Movement
+-- ============================================================================
 __modules["Systems.Movement"] = function()
 --!strict
 local UserInputService = game:GetService("UserInputService")
@@ -2596,7 +2805,9 @@ return Movement
 end
 __modules["Systems/Movement"] = __modules["Systems.Movement"]
 
+-- ============================================================================
 -- Module: Systems.Skills
+-- ============================================================================
 __modules["Systems.Skills"] = function()
 --!strict
 local Players = game:GetService("Players")
@@ -2668,7 +2879,9 @@ return Skills
 end
 __modules["Systems/Skills"] = __modules["Systems.Skills"]
 
+-- ============================================================================
 -- Module: Systems.Survival
+-- ============================================================================
 __modules["Systems.Survival"] = function()
 --!strict
 local Players = game:GetService("Players")
@@ -2798,7 +3011,9 @@ return Survival
 end
 __modules["Systems/Survival"] = __modules["Systems.Survival"]
 
+-- ============================================================================
 -- Module: Systems.Visuals
+-- ============================================================================
 __modules["Systems.Visuals"] = function()
 --!strict
 local Players = game:GetService("Players")
@@ -2869,7 +3084,9 @@ return Visuals
 end
 __modules["Systems/Visuals"] = __modules["Systems.Visuals"]
 
+-- ============================================================================
 -- Module: Systems.World
+-- ============================================================================
 __modules["Systems.World"] = function()
 --!strict
 local Lighting = game:GetService("Lighting")
@@ -2967,7 +3184,9 @@ return World
 end
 __modules["Systems/World"] = __modules["Systems.World"]
 
+-- ============================================================================
 -- Module: UI.Components
+-- ============================================================================
 __modules["UI.Components"] = function()
 --!strict
 local TweenService = game:GetService("TweenService")
@@ -3182,9 +3401,55 @@ end
 __modules["UI/Components"] = __modules["UI.Components"]
 
 -- ============================================================================
--- FRAMEWORK ENTRYPOINT
+-- FRAMEWORK PUBLIC RUNTIME SURFACE & ENTRYPOINT
 -- ============================================================================
 local Bootstrap = require("Bootstrap")
+local UnitTests = require("Diagnostics.UnitTests")
+
+local Framework = {
+    Version = "9.0-SPECIALIST-PRODUCTION",
+    Bootstrap = Bootstrap,
+    
+    Start = function(self)
+        return Bootstrap:Init()
+    end,
+    
+    Stop = function(self)
+        return Bootstrap:Destroy()
+    end,
+    
+    Destroy = function(self)
+        return Bootstrap:Destroy()
+    end,
+    
+    GetService = function(self, serviceName: string)
+        if Bootstrap.Container and Bootstrap.Container:Has(serviceName) then
+            return Bootstrap.Container:Get(serviceName)
+        end
+        return nil
+    end,
+    
+    GetDiagnostics = function(self)
+        return Bootstrap:GetDiagnostics()
+    end,
+    
+    RunTests = function(self)
+        return UnitTests.RunAll()
+    end,
+}
+
+-- Expose Public Framework Handle to Global Environment for External Lifecycle Control
+if typeof(_G) == "table" then
+    _G.TSBFramework = Framework
+end
+if typeof(getgenv) == "function" then
+    pcall(function()
+        getgenv().TSBFramework = Framework
+    end)
+end
+
+-- Automatic Framework Boot
 Bootstrap:Init()
 
-print("[4080 HUB v8.0] Production Framework Booted Successfully.")
+print("[4080 HUB v9.0] Specialist Production Framework Booted Successfully.")
+return Framework

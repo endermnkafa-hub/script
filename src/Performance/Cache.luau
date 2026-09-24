@@ -116,6 +116,50 @@ end
 function CacheEngine:InvalidatePlayer(player: Player)
     self.PlayerCache[player] = nil
     self.PlayerStats.Invalidations += 1
+    self:InvalidateRaycasts()
+end
+
+function CacheEngine:InvalidateRaycasts()
+    table.clear(self.RaycastCache)
+    self.RaycastStats.Invalidations += 1
+end
+
+-- Event-driven cache invalidation for workspace topology changes & player lifecycle
+function CacheEngine:HookWorkspaceEvents(maid: any)
+    if not maid then return end
+
+    local lastGeomInvalidate = 0
+    local function onTopologyChange()
+        local now = os.clock()
+        if (now - lastGeomInvalidate) > 0.1 then -- Debounced invalidation (max 10 Hz)
+            lastGeomInvalidate = now
+            table.clear(self.RaycastCache)
+            self.RaycastStats.Invalidations += 1
+        end
+    end
+
+    local Players = game:GetService("Players")
+
+    pcall(function()
+        maid:GiveTask(workspace.DescendantAdded:Connect(onTopologyChange))
+        maid:GiveTask(workspace.DescendantRemoving:Connect(onTopologyChange))
+
+        maid:GiveTask(Players.PlayerRemoving:Connect(function(player)
+            self:InvalidatePlayer(player)
+        end))
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            maid:GiveTask(player.CharacterRemoving:Connect(function()
+                self:InvalidatePlayer(player)
+            end))
+        end
+
+        maid:GiveTask(Players.PlayerAdded:Connect(function(player)
+            maid:GiveTask(player.CharacterRemoving:Connect(function()
+                self:InvalidatePlayer(player)
+            end))
+        end))
+    end)
 end
 
 function CacheEngine:Clear()

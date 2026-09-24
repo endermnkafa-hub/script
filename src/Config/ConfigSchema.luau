@@ -84,14 +84,14 @@ local ConfigSchema = {
         AccentName         = { Type = "string",  Default = "Cyan Neon" },
     },
     Keybinds = {
-        ToggleGUI          = { Type = "EnumItem", Default = Enum.KeyCode.RightControl },
-        ToggleFly          = { Type = "EnumItem", Default = Enum.KeyCode.F5 },
-        ToggleNoclip       = { Type = "EnumItem", Default = Enum.KeyCode.F6 },
-        ToggleAimlock      = { Type = "EnumItem", Default = Enum.KeyCode.F7 },
-        ToggleBehindTP     = { Type = "EnumItem", Default = Enum.KeyCode.F9 },
-        ToggleSkyDodge     = { Type = "EnumItem", Default = Enum.KeyCode.H },
-        EmergencyStop      = { Type = "EnumItem", Default = Enum.KeyCode.Delete },
-        MassBringKey       = { Type = "EnumItem", Default = Enum.KeyCode.G },
+        ToggleGUI          = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.RightControl },
+        ToggleFly          = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F5 },
+        ToggleNoclip       = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F6 },
+        ToggleAimlock      = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F7 },
+        ToggleBehindTP     = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.F9 },
+        ToggleSkyDodge     = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.H },
+        EmergencyStop      = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.Delete },
+        MassBringKey       = { Type = "EnumItem", EnumType = Enum.KeyCode, Default = Enum.KeyCode.G },
     }
 }
 

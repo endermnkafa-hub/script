@@ -59,7 +59,11 @@ function ConfigManager:ValidateAndClamp(data: any): any
                             data[catName][key] = spec.Default
                         end
                     elseif spec.Type == "EnumItem" then
-                        if typeof(val) ~= "EnumItem" then
+                        if typeof(val) == "EnumItem" then
+                            if spec.EnumType and val.EnumType ~= spec.EnumType then
+                                data[catName][key] = spec.Default
+                            end
+                        else
                             data[catName][key] = spec.Default
                         end
                     end

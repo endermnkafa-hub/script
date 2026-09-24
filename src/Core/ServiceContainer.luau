@@ -68,38 +68,77 @@ function ServiceContainer:BuildGraph(): { [string]: { string } }
     return graph
 end
 
+-- Kahn's Algorithm / Topological Sort for Dependency Graph
+-- Resolves services in dependency-first order and detects any cyclic dependencies
 function ServiceContainer:TopologicalSort(): ({ string }, boolean, string?)
-    local visited = {}
-    local recStack = {}
-    local order = {}
-    local hasCycle = false
-    local cycleNode = nil
+    local inDegree = {}
+    local adjList = {}
+    local allNodes = {}
 
-    local function dfs(node: string)
-        if recStack[node] then
-            hasCycle = true
-            cycleNode = node
-            return
+    -- Collect all registered nodes
+    for name, _ in pairs(self._dependencies) do
+        allNodes[name] = true
+        inDegree[name] = 0
+        adjList[name] = {}
+    end
+    for name, _ in pairs(self._services) do
+        if not allNodes[name] then
+            allNodes[name] = true
+            inDegree[name] = 0
+            adjList[name] = {}
         end
-        if visited[node] then return end
-
-        visited[node] = true
-        recStack[node] = true
-
-        local deps = self._dependencies[node] or {}
-        for _, dep in ipairs(deps) do
-            if self:Has(dep) then
-                dfs(dep)
-            end
+    end
+    for name, _ in pairs(self._factories) do
+        if not allNodes[name] then
+            allNodes[name] = true
+            inDegree[name] = 0
+            adjList[name] = {}
         end
-
-        recStack[node] = false
-        table.insert(order, node)
     end
 
-    for name, _ in pairs(self._dependencies) do
-        if not visited[name] then
-            dfs(name)
+    -- Build adjacency list: if A depends on B, edge is B -> A (B must resolve before A)
+    for node, deps in pairs(self._dependencies) do
+        for _, dep in ipairs(deps) do
+            if allNodes[dep] then
+                table.insert(adjList[dep], node)
+                inDegree[node] = (inDegree[node] or 0) + 1
+            end
+        end
+    end
+
+    -- Queue for nodes with in-degree 0 (no unresolved dependencies)
+    local queue = {}
+    for node, deg in pairs(inDegree) do
+        if deg == 0 then
+            table.insert(queue, node)
+        end
+    end
+
+    local order = {}
+    while #queue > 0 do
+        local curr = table.remove(queue, 1)
+        table.insert(order, curr)
+
+        for _, neighbor in ipairs(adjList[curr] or {}) do
+            inDegree[neighbor] -= 1
+            if inDegree[neighbor] == 0 then
+                table.insert(queue, neighbor)
+            end
+        end
+    end
+
+    -- If order contains all nodes, no cycles exist; otherwise a cycle was detected
+    local totalCount = 0
+    for _ in pairs(allNodes) do totalCount += 1 end
+
+    local hasCycle = (#order < totalCount)
+    local cycleNode = nil
+    if hasCycle then
+        for node, deg in pairs(inDegree) do
+            if deg > 0 then
+                cycleNode = node
+                break
+            end
         end
     end
 

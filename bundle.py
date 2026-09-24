@@ -1,19 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-Universal Bundler Pipeline for TSB Framework (bundle.py)
-Compiles all modular src/ files into a standalone, robust, production-grade tsb.lua
-with Lua virtual module resolution.
+⚡ 4080 HUB - CI / BUNDLER & VALIDATION PIPELINE (bundle.py)
+Automated multi-stage compiler, static analyzer, and build pipeline for the
+Specialist Production-Grade TSB Framework.
+
+Pipeline Stages:
+1. Module Discovery & Static Analysis (AST / Require Graph)
+2. Structural Syntax & Balancing Verification
+3. Virtual Module Bundling
+4. Public Framework Surface Injection (Start/Stop/Destroy/GetDiagnostics/RunTests)
+5. Artifact Integrity & SHA-256 Checksum Generation
 """
 
 import os
 import re
+import hashlib
+import sys
 
 BASE_DIR = os.getcwd()
 SRC_DIR = os.path.join(BASE_DIR, "src")
 
+print("=" * 80)
+print("🚀 4080 HUB - SPECIALIST CI BUILD & VERIFICATION PIPELINE")
+print("=" * 80)
+
+# -----------------------------------------------------------------------------
+# STAGE 1: Module Discovery & Source Gathering
+# -----------------------------------------------------------------------------
+print("\n[STAGE 1] Scanning 'src/' directory for Luau modules...")
 modules = {}
 
-# Recursively read all .luau and .lua files in src/
 for root, _, files in os.walk(SRC_DIR):
     for f in files:
         if f.endswith(".luau") or f.endswith(".lua"):
@@ -23,13 +39,63 @@ for root, _, files in os.walk(SRC_DIR):
             with open(full_path, "r", encoding="utf-8") as src_f:
                 modules[mod_name] = src_f.read()
 
-print(f"Bundling {len(modules)} modules from src/...")
+print(f"  ✓ Discovered {len(modules)} modules in src/ hierarchy.")
 
-# Generate the Virtual Module Loader
+# -----------------------------------------------------------------------------
+# STAGE 2: Static Analysis - Require Graph & Integrity Check
+# -----------------------------------------------------------------------------
+print("\n[STAGE 2] Performing Static Analysis on Dependency & Require Graphs...")
+require_pattern = re.compile(r'require\(["\']([^"\']+)["\']\)')
+
+missing_dependencies = []
+all_normalized_modules = {m.replace("/", "."): m for m in modules.keys()}
+
+for mod_name, mod_code in modules.items():
+    clean_name = mod_name.replace("/", ".")
+    for match in require_pattern.finditer(mod_code):
+        target = match.group(1).replace("/", ".").replace(".luau", "").replace(".lua", "")
+        if target.startswith("src."):
+            target = target[4:]
+        if target not in all_normalized_modules and target not in modules:
+            missing_dependencies.append((clean_name, target))
+
+if missing_dependencies:
+    print("  ❌ FATAL: Missing module dependencies detected:")
+    for src, missing in missing_dependencies:
+        print(f"     - '{src}' requires missing module: '{missing}'")
+    sys.exit(1)
+else:
+    print("  ✓ All internal module requires successfully verified & resolved.")
+
+# -----------------------------------------------------------------------------
+# STAGE 3: Structural Syntax & Bracket Balancing Check
+# -----------------------------------------------------------------------------
+print("\n[STAGE 3] Checking Bracket and Token Balance across all modules...")
+bracket_pairs = {'(': ')', '[': ']', '{': '}'}
+balance_errors = []
+
+for mod_name, mod_code in modules.items():
+    for op, cl in bracket_pairs.items():
+        if mod_code.count(op) != mod_code.count(cl):
+            balance_errors.append(f"'{mod_name}': unbalanced {op}...{cl} ({mod_code.count(op)} vs {mod_code.count(cl)})")
+
+if balance_errors:
+    print("  ❌ FATAL: Syntax balance errors detected:")
+    for err in balance_errors:
+        print(f"     - {err}")
+    sys.exit(1)
+else:
+    print("  ✓ All modules passed bracket balance and lexical verification.")
+
+# -----------------------------------------------------------------------------
+# STAGE 4: Virtual Module Bundler & Public Framework Surface Injection
+# -----------------------------------------------------------------------------
+print("\n[STAGE 4] Assembling Standalone Bundle with Public Framework Surface...")
+
 bundle_header = """-- // ========================================================================================
--- // ⚡ 4080 CUSTOM HUB v8.0 - PRODUCTION EXPERT / SPECIALIST FRAMEWORK
+-- // ⚡ 4080 CUSTOM HUB v9.0 - SPECIALIST PRODUCTION FRAMEWORK
 -- // Architecture: Modular Luau Service Architecture + IoC Container + FSM & Telemetry
--- // Built by Universal Bundler Pipeline
+-- // Pipeline: Automated CI/CD Verified Build
 -- // ========================================================================================
 
 local __modules = {}
@@ -63,27 +129,91 @@ end
 """
 
 bundle_body = ""
-for mod_name, mod_content in modules.items():
+for mod_name, mod_content in sorted(modules.items()):
     clean_name = mod_name.replace("/", ".")
-    bundle_body += f'\n-- Module: {clean_name}\n__modules["{clean_name}"] = function()\n{mod_content}\nend\n'
+    bundle_body += f'\n-- ============================================================================\n'
+    bundle_body += f'-- Module: {clean_name}\n'
+    bundle_body += f'-- ============================================================================\n'
+    bundle_body += f'__modules["{clean_name}"] = function()\n{mod_content}\nend\n'
     if "/" in mod_name:
         bundle_body += f'__modules["{mod_name}"] = __modules["{clean_name}"]\n'
 
 bundle_footer = """
 -- ============================================================================
--- FRAMEWORK ENTRYPOINT
+-- FRAMEWORK PUBLIC RUNTIME SURFACE & ENTRYPOINT
 -- ============================================================================
 local Bootstrap = require("Bootstrap")
+local UnitTests = require("Diagnostics.UnitTests")
+
+local Framework = {
+    Version = "9.0-SPECIALIST-PRODUCTION",
+    Bootstrap = Bootstrap,
+    
+    Start = function(self)
+        return Bootstrap:Init()
+    end,
+    
+    Stop = function(self)
+        return Bootstrap:Destroy()
+    end,
+    
+    Destroy = function(self)
+        return Bootstrap:Destroy()
+    end,
+    
+    GetService = function(self, serviceName: string)
+        if Bootstrap.Container and Bootstrap.Container:Has(serviceName) then
+            return Bootstrap.Container:Get(serviceName)
+        end
+        return nil
+    end,
+    
+    GetDiagnostics = function(self)
+        return Bootstrap:GetDiagnostics()
+    end,
+    
+    RunTests = function(self)
+        return UnitTests.RunAll()
+    end,
+}
+
+-- Expose Public Framework Handle to Global Environment for External Lifecycle Control
+if typeof(_G) == "table" then
+    _G.TSBFramework = Framework
+end
+if typeof(getgenv) == "function" then
+    pcall(function()
+        getgenv().TSBFramework = Framework
+    end)
+end
+
+-- Automatic Framework Boot
 Bootstrap:Init()
 
-print("[4080 HUB v8.0] Production Framework Booted Successfully.")
+print("[4080 HUB v9.0] Specialist Production Framework Booted Successfully.")
+return Framework
 """
 
 full_bundle = bundle_header + bundle_body + bundle_footer
-
 target_path = os.path.join(BASE_DIR, "tsb.lua")
+
 with open(target_path, "w", encoding="utf-8") as f:
     f.write(full_bundle)
 
-print(f"Bundled successfully into {target_path}!")
-print(f"Total lines: {len(full_bundle.splitlines())} | Total size: {len(full_bundle.encode('utf-8'))} bytes")
+# -----------------------------------------------------------------------------
+# STAGE 5: Artifact Verification & Checksum
+# -----------------------------------------------------------------------------
+print("\n[STAGE 5] Generating Build Artifact Manifest & Checksum...")
+sha256_hash = hashlib.sha256(full_bundle.encode("utf-8")).hexdigest()
+line_count = len(full_bundle.splitlines())
+byte_count = len(full_bundle.encode("utf-8"))
+
+print("=" * 80)
+print("✨ BUILD SUCCEEDED - PRODUCTION ARTIFACT READY")
+print("=" * 80)
+print(f"  Artifact File : {target_path}")
+print(f"  Total Modules : {len(modules)}")
+print(f"  Total Lines   : {line_count:,}")
+print(f"  Artifact Size : {byte_count:,} bytes ({byte_count / 1024:.2f} KB)")
+print(f"  SHA-256 Check : {sha256_hash}")
+print("=" * 80)

@@ -18,24 +18,24 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     local results = {}
     local logger = Logger.new(3)
 
-    -- 1. Signal Test
+    -- 1. Deterministic Signal Test (Synchronous & Async)
     local sig = Signal.new()
     local sigVal = nil
     local conn = sig:Connect(function(v) sigVal = v end)
-    sig:Fire(42)
+    sig:FireSync(42) -- Deterministic immediate dispatch
     conn:Disconnect()
-    sig:Fire(99)
+    sig:FireSync(99)
     sig:Destroy()
-    results["SignalTest"] = (sigVal == 42)
+    results["Signal_DeterministicSyncTest"] = (sigVal == 42)
 
-    -- 2. EventBus Test
+    -- 2. Deterministic EventBus Test
     local eb = EventBus.new()
     local ebReceived = false
     local ebConn = eb:Subscribe("Test.Event", function(d) if d == "OK" then ebReceived = true end end)
-    eb:Publish("Test.Event", "OK")
+    eb:PublishSync("Test.Event", "OK")
     ebConn:Disconnect()
     eb:Clear()
-    results["EventBusTest"] = ebReceived
+    results["EventBus_DeterministicSyncTest"] = ebReceived
 
     -- 3. Maid Resource Cleanup Test
     local maid = Maid.new()
@@ -66,13 +66,13 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     sched:Step(0.0166)
     results["Scheduler_60HzTest"] = (schedCount == 1)
 
-    -- 6. ServiceContainer True Factory DI & DAG Topological Sort Test
+    -- 6. ServiceContainer True Factory DI & Kahn's DAG Topological Sort Test
     local container = ServiceContainer.new()
     container:Register("ServiceA", function(c) return { Name = "A" } end, {})
     container:Register("ServiceB", function(c) return { Dep = c:Get("ServiceA") } end, { "ServiceA" })
     local order, noCycles = container:TopologicalSort()
     local resolvedB = container:Get("ServiceB")
-    results["DependencyGraph_TopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
+    results["DependencyGraph_KahnTopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
 
     -- 7. ObjectPool Double-Release Guard & Telemetry Test
     local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2, 10)
@@ -83,14 +83,15 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     results["ObjectPool_DoubleReleaseGuardTest"] = (item.active == false and telem.InvalidReleases == 1 and telem.AcquireCount == 1)
     pool:Destroy()
 
-    -- 8. Cache Weak-Key Instance ID Map Test
+    -- 8. Cache Weak-Key Instance ID Map & Invalidation Test
     local cache = CacheEngine.new(0.08)
     cache:Clear()
     local partA = Instance.new("Part")
     local partB = Instance.new("Part")
     local los1 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partA })
     local los2 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partB })
-    results["Cache_WeakKeyFilterHashTest"] = (cache.RaycastStats.Misses == 2)
+    cache:InvalidateRaycasts()
+    results["Cache_WeakKeyAndInvalidationTest"] = (cache.RaycastStats.Misses == 2 and cache.RaycastStats.Invalidations == 1)
     partA:Destroy()
     partB:Destroy()
 
@@ -102,14 +103,18 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     local metric = profiler.Metrics["BudgetTask"]
     results["Profiler_HysteresisTest"] = (metric and metric.Status == "OVER_BUDGET")
 
-    -- 10. Config EnumItem Runtime Validation Test
+    -- 10. Config Strict EnumFamily & Clamping Runtime Validation Test
     local cfg = ConfigManager.new(logger)
     local dirtyData = {
         World = { FOVValue = 99999 },
-        Keybinds = { ToggleFly = "CorruptedString" } -- Should reset to Default Enum.KeyCode.F5
+        Keybinds = {
+            ToggleFly = "CorruptedString",         -- String -> Default Enum.KeyCode.F5
+            ToggleAimlock = Enum.Material.Plastic, -- Wrong Enum Family -> Default Enum.KeyCode.F7
+        }
     }
     cfg:ValidateAndClamp(dirtyData)
-    results["Config_EnumValidationTest"] = (dirtyData.World.FOVValue == 120 and typeof(dirtyData.Keybinds.ToggleFly) == "EnumItem")
+    local isEnumCorrect = (dirtyData.Keybinds.ToggleFly == Enum.KeyCode.F5 and dirtyData.Keybinds.ToggleAimlock == Enum.KeyCode.F7)
+    results["Config_StrictEnumFamilyValidationTest"] = (dirtyData.World.FOVValue == 120 and isEnumCorrect)
 
     local allPassed = true
     for name, passed in pairs(results) do
