@@ -7,6 +7,8 @@ function NetworkEngine.new(deps: { Logger: any, EventBus: any, RemoteResolver: a
         _logger = deps.Logger,
         _eventBus = deps.EventBus,
         _remoteResolver = deps.RemoteResolver,
+        _isHooked = false,
+        _oldNamecall = nil,
         OutgoingHooked = false,
         PacketCount = 0,
         LastPacketTick = 0,
@@ -17,11 +19,17 @@ function NetworkEngine.new(deps: { Logger: any, EventBus: any, RemoteResolver: a
 end
 
 function NetworkEngine:Init()
+    if self._isHooked then return end -- Idempotency Guard
+
     pcall(function()
         if typeof(hookmetamethod) == "function" and typeof(getnamecallmethod) == "function" then
             local oldNamecall
             local this = self
             oldNamecall = hookmetamethod(game, "__namecall", function(selfRemote, ...)
+                if not this._isHooked then
+                    return oldNamecall(selfRemote, ...)
+                end
+
                 local method = getnamecallmethod()
                 local args = {...}
 
@@ -39,6 +47,8 @@ function NetworkEngine:Init()
                 end
                 return oldNamecall(selfRemote, ...)
             end)
+            self._oldNamecall = oldNamecall
+            self._isHooked = true
             self.OutgoingHooked = true
             self._logger:Info("NetworkEngine", "Metamethod Hook initialized successfully.")
         else
@@ -46,6 +56,16 @@ function NetworkEngine:Init()
             self._logger:Warn("NetworkEngine", "Running in Degraded Mode (hookmetamethod API unsupported)")
         end
     end)
+end
+
+function NetworkEngine:Unhook()
+    self._isHooked = false
+    self.OutgoingHooked = false
+end
+
+function NetworkEngine:Destroy()
+    self:Unhook()
+    self._oldNamecall = nil
 end
 
 function NetworkEngine:SendAction(goalName: string, payload: any?): boolean

@@ -9,6 +9,7 @@ export type Feature = {
     Dependencies: { string },
     Enabled: boolean,
     Status: string, -- "INITIALIZED", "RUNNING", "STOPPED", "DEGRADED", "THROTTLED"
+    DegradedReason: string?,
     OverBudgetCount: number,
     Maid: any,
     Init: ((self: Feature, ctx: any) -> ())?,
@@ -43,6 +44,7 @@ function FeatureManager:Register(def: any): Feature
         Dependencies = def.Dependencies or {},
         Enabled = def.Enabled or false,
         Status = "INITIALIZED",
+        DegradedReason = nil,
         OverBudgetCount = 0,
         Maid = Maid.new(),
         Init = def.Init,
@@ -70,8 +72,11 @@ function FeatureManager:ValidateDependencies(container: any): (boolean, { [strin
     for name, feat in pairs(self._features) do
         for _, dep in ipairs(feat.Dependencies) do
             if not container:Has(dep) and not self._features[dep] then
-                report[name] = string.format("Missing Dependency '%s'", dep)
+                local reason = string.format("Missing Required Dependency '%s'", dep)
+                report[name] = reason
                 feat.Status = "DEGRADED"
+                feat.DegradedReason = reason
+                feat.Enabled = false -- Isolate and prevent execution
                 allValid = false
             end
         end
@@ -81,11 +86,16 @@ function FeatureManager:ValidateDependencies(container: any): (boolean, { [strin
 end
 
 function FeatureManager:InitAll(ctx: any)
-    -- Complete Lifecycle: Run Init for all, and immediately Start all enabled features!
     for name, feat in pairs(self._features) do
+        if feat.Status == "DEGRADED" then
+            self._logger:Warn("FeatureManager", string.format("Skipping Degraded Feature '%s': %s", name, tostring(feat.DegradedReason)))
+            continue
+        end
+
         if feat.Init then
             self._logger:SafeCall(name .. ".Init", feat.Init, feat, ctx)
         end
+
         if feat.Enabled then
             feat.Status = "RUNNING"
             if feat.Start then
@@ -98,6 +108,11 @@ end
 function FeatureManager:SetEnabled(name: string, enabled: boolean, ctx: any)
     local feat = self._features[name]
     if not feat or feat.Enabled == enabled then return end
+
+    if feat.Status == "DEGRADED" and enabled then
+        self._logger:Warn("FeatureManager", string.format("Cannot enable Degraded Feature '%s': %s", name, tostring(feat.DegradedReason)))
+        return
+    end
 
     feat.Enabled = enabled
     if enabled then
@@ -120,21 +135,22 @@ function FeatureManager:ExecutePipeline(phase: string, dt: number, ctx: any)
     elseif phase == "Stepped" then list = self._steppedPipeline end
 
     for _, feat in ipairs(list) do
-        if feat.Enabled and feat.Update then
-            -- Active Budget Throttling based on EMA Profiler Status
+        if feat.Enabled and feat.Status ~= "DEGRADED" and feat.Update then
+            -- Active Throttling with Hysteresis
             local metric = self._profiler and self._profiler.Metrics[feat.Name]
             if metric and metric.Status == "OVER_BUDGET" then
                 feat.OverBudgetCount += 1
                 if feat.OverBudgetCount > 3 then
                     feat.Status = "THROTTLED"
-                    -- Throttle: Skip every alternate frame to protect frame budget
                     if (feat.OverBudgetCount % 2) == 0 then
-                        continue
+                        continue -- Frame skip
                     end
                 end
             else
                 feat.OverBudgetCount = 0
-                feat.Status = "RUNNING"
+                if feat.Status == "THROTTLED" then
+                    feat.Status = "RUNNING"
+                end
             end
 
             local start = self._profiler and self._profiler:Begin(feat.Name, feat.Budget)

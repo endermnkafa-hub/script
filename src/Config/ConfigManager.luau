@@ -14,7 +14,6 @@ function ConfigManager.new(logger: any)
         _degradedMode = false,
     }, ConfigManager)
 
-    -- Initialize with validated defaults from Schema
     self:ResetToDefaults()
 
     if typeof(writefile) ~= "function" or typeof(readfile) ~= "function" then
@@ -37,7 +36,7 @@ function ConfigManager:ResetToDefaults()
 end
 
 function ConfigManager:ValidateAndClamp(data: any): any
-    -- Strict Runtime Schema Enforcement: Validates types, clamps Min/Max bounds, rejects out-of-range corrupt values!
+    -- Strict Runtime Schema Enforcement with EnumItem type validation
     for catName, catSchema in pairs(ConfigSchema) do
         if type(data[catName]) == "table" then
             for key, spec in pairs(catSchema) do
@@ -57,6 +56,10 @@ function ConfigManager:ValidateAndClamp(data: any): any
                         end
                     elseif spec.Type == "string" then
                         if type(val) ~= "string" then
+                            data[catName][key] = spec.Default
+                        end
+                    elseif spec.Type == "EnumItem" then
+                        if typeof(val) ~= "EnumItem" then
                             data[catName][key] = spec.Default
                         end
                     end
@@ -115,7 +118,6 @@ function ConfigManager:Save(): (boolean, string?)
     if self._degradedMode then
         return true, "In-Memory"
     end
-    -- Validate & clamp before saving
     self:ValidateAndClamp(self.Config)
 
     local ok, err = pcall(function()
@@ -138,7 +140,6 @@ function ConfigManager:Load(): (boolean, string?)
         local raw = readfile(self.FileName)
         local rawData = HttpService:JSONDecode(raw)
         local decoded = DeserializeValue(rawData)
-        -- Enforce strict schema validation and min/max clamping on loaded data
         self:ValidateAndClamp(decoded)
         self.Config = decoded
         self:RefreshUI()

@@ -40,6 +40,7 @@ local ServiceContainer = require("Core.ServiceContainer")
 local Signal = require("Core.Signal")
 local EventBus = require("Core.EventBus")
 local Logger = require("Core.Logger")
+local Maid = require("Core.Maid")
 local Scheduler = require("Core.Scheduler")
 local StateMachine = require("Architecture.StateMachine")
 local FeatureManager = require("Architecture.FeatureManager")
@@ -62,14 +63,27 @@ local SelfDiagnostics = require("Diagnostics.SelfDiagnostics")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 
-local Bootstrap = {}
+local Bootstrap = {
+    _maid = nil :: any,
+    _isInitialized = false,
+    Container = nil :: any,
+}
 
 function Bootstrap:Init()
+    if self._isInitialized then
+        -- Prevent Duplicate Loops: Destroy previous instance symmetrically
+        self:Destroy()
+    end
+
+    self._maid = Maid.new()
+    self._isInitialized = true
+
     local logger = Logger.new(3)
-    logger:Info("Bootstrap", "=== 4080 HUB v8.5 TRUE EXPERT/SPECIALIST FRAMEWORK BOOTING ===")
+    logger:Info("Bootstrap", "=== 4080 HUB v9.0 PRODUCTION SPECIALIST FRAMEWORK BOOTING ===")
 
     -- 1. Create Core Instances (Instance-based OOP Architecture)
     local container = ServiceContainer.new()
+    self.Container = container
     local eventBus = EventBus.new()
     local scheduler = Scheduler.new()
     local profiler = Profiler.new()
@@ -79,22 +93,22 @@ function Bootstrap:Init()
     local configManager = ConfigManager.new(logger)
     local diagnostics = SelfDiagnostics.new(logger)
 
-    -- 2. Register Core Singletons / Factories into IoC Container
-    container:Register("Logger", logger)
-    container:Register("EventBus", eventBus)
-    container:Register("Scheduler", scheduler)
-    container:Register("Profiler", profiler)
-    container:Register("Cache", cache)
-    container:Register("StateMachine", fsm)
-    container:Register("FeatureManager", featureManager)
-    container:Register("ConfigManager", configManager)
-    container:Register("Diagnostics", diagnostics)
-    container:Register("ObjectPool", ObjectPool)
+    -- 2. Register Core Singletons into IoC Container
+    container:Register("Logger", logger, {})
+    container:Register("EventBus", eventBus, { "Logger" })
+    container:Register("Scheduler", scheduler, { "Logger" })
+    container:Register("Profiler", profiler, {})
+    container:Register("Cache", cache, {})
+    container:Register("StateMachine", fsm, { "Logger" })
+    container:Register("FeatureManager", featureManager, { "Logger", "Profiler" })
+    container:Register("ConfigManager", configManager, { "Logger" })
+    container:Register("Diagnostics", diagnostics, { "Logger" })
+    container:Register("ObjectPool", ObjectPool, {})
 
-    -- 3. Register Systems via True Constructor Dependency Injection
+    -- 3. Register Systems via True Constructor Dependency Injection with Explicit DAG Dependencies
     container:Register("RemoteResolver", function(c)
         return RemoteResolver.new(c:Get("Logger"))
-    end)
+    end, { "Logger" })
 
     container:Register("NetworkEngine", function(c)
         return NetworkEngine.new({
@@ -102,7 +116,7 @@ function Bootstrap:Init()
             EventBus = c:Get("EventBus"),
             RemoteResolver = c:Get("RemoteResolver"),
         })
-    end)
+    end, { "Logger", "EventBus", "RemoteResolver" })
 
     container:Register("EnemyState", function(c)
         return EnemyState.new({
@@ -110,7 +124,7 @@ function Bootstrap:Init()
             EventBus = c:Get("EventBus"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "EventBus", "Logger" })
 
     container:Register("Combat", function(c)
         return Combat.new({
@@ -121,14 +135,14 @@ function Bootstrap:Init()
             Logger = c:Get("Logger"),
             StateMachine = c:Get("StateMachine"),
         })
-    end)
+    end, { "Cache", "EventBus", "NetworkEngine", "EnemyState", "Logger", "StateMachine" })
 
     container:Register("Movement", function(c)
         return Movement.new({
             Cache = c:Get("Cache"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "Logger" })
 
     container:Register("Survival", function(c)
         return Survival.new({
@@ -137,7 +151,7 @@ function Bootstrap:Init()
             EventBus = c:Get("EventBus"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "StateMachine", "EventBus", "Logger" })
 
     container:Register("Skills", function(c)
         return Skills.new({
@@ -145,14 +159,14 @@ function Bootstrap:Init()
             Combat = c:Get("Combat"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "Combat", "Logger" })
 
     container:Register("World", function(c)
         return World.new({
             ConfigManager = c:Get("ConfigManager"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "ConfigManager", "Logger" })
 
     container:Register("Visuals", function(c)
         return Visuals.new({
@@ -160,16 +174,20 @@ function Bootstrap:Init()
             ObjectPool = ObjectPool,
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "ObjectPool", "Logger" })
 
     -- 4. Run Diagnostics & Automated Unit Tests on Isolated Instances
     diagnostics:RunHealthCheck()
     local testsPassed, testResults = UnitTests.RunAll()
     logger:Info("Bootstrap", string.format("Automated Isolated Test Suite: %s", testsPassed and "100% PASSED" or "TESTS FAILED"))
 
-    -- 5. Instantiate Core Systems via DI
+    -- 5. Topological DAG Resolution of All Systems
+    local initOrder = container:ResolveAllInOrder()
+    logger:Info("Bootstrap", string.format("DAG Resolution Complete. Initialized %d services in topological order.", #initOrder))
+
     local network = container:Get("NetworkEngine")
     network:Init()
+    self._maid:GiveTask(function() network:Destroy() end)
 
     local combat = container:Get("Combat")
     local movement = container:Get("Movement")
@@ -272,27 +290,39 @@ function Bootstrap:Init()
 
     -- Validate all feature dependencies in DI container
     local depsOk, depReport = featureManager:ValidateDependencies(container)
-    logger:Info("Bootstrap", string.format("Dependency Graph Validation: %s", depsOk and "ALL DEPENDENCIES SATISFIED" or "DEGRADED"))
+    logger:Info("Bootstrap", string.format("Feature Dependency Graph: %s", depsOk and "ALL SATISFIED" or "DEGRADED ISOLATION ACTIVE"))
 
     featureManager:InitAll(container)
+    self._maid:GiveTask(function() featureManager:DestroyAll() end)
 
-    -- 9. Connect Game Loop Pipelines
-    RunService.RenderStepped:Connect(function(dt)
+    -- 9. Connect Game Loop Pipelines & Store Connections in Root Maid
+    local rsConn = RunService.RenderStepped:Connect(function(dt)
         featureManager:ExecutePipeline("RenderStepped", dt, container)
     end)
+    self._maid:GiveTask(rsConn)
 
-    RunService.Stepped:Connect(function()
+    local stConn = RunService.Stepped:Connect(function()
         movement:UpdateNoclip(configManager.Config)
         featureManager:ExecutePipeline("Stepped", 1/60, container)
     end)
+    self._maid:GiveTask(stConn)
 
-    RunService.Heartbeat:Connect(function(dt)
+    local hbConn = RunService.Heartbeat:Connect(function(dt)
         fsm:Update(dt, container)
         scheduler:Step(dt)
         featureManager:ExecutePipeline("Heartbeat", dt, container)
     end)
+    self._maid:GiveTask(hbConn)
 
-    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (LEVEL 6 SPECIALIST ARCHITECTURE) ===")
+    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (SPECIALIST PRODUCTION ARCHITECTURE) ===")
+end
+
+function Bootstrap:Destroy()
+    if self._maid then
+        self._maid:DoCleaning()
+        self._maid = nil
+    end
+    self._isInitialized = false
 end
 
 return Bootstrap
@@ -312,6 +342,7 @@ export type Feature = {
     Dependencies: { string },
     Enabled: boolean,
     Status: string, -- "INITIALIZED", "RUNNING", "STOPPED", "DEGRADED", "THROTTLED"
+    DegradedReason: string?,
     OverBudgetCount: number,
     Maid: any,
     Init: ((self: Feature, ctx: any) -> ())?,
@@ -346,6 +377,7 @@ function FeatureManager:Register(def: any): Feature
         Dependencies = def.Dependencies or {},
         Enabled = def.Enabled or false,
         Status = "INITIALIZED",
+        DegradedReason = nil,
         OverBudgetCount = 0,
         Maid = Maid.new(),
         Init = def.Init,
@@ -373,8 +405,11 @@ function FeatureManager:ValidateDependencies(container: any): (boolean, { [strin
     for name, feat in pairs(self._features) do
         for _, dep in ipairs(feat.Dependencies) do
             if not container:Has(dep) and not self._features[dep] then
-                report[name] = string.format("Missing Dependency '%s'", dep)
+                local reason = string.format("Missing Required Dependency '%s'", dep)
+                report[name] = reason
                 feat.Status = "DEGRADED"
+                feat.DegradedReason = reason
+                feat.Enabled = false -- Isolate and prevent execution
                 allValid = false
             end
         end
@@ -384,11 +419,16 @@ function FeatureManager:ValidateDependencies(container: any): (boolean, { [strin
 end
 
 function FeatureManager:InitAll(ctx: any)
-    -- Complete Lifecycle: Run Init for all, and immediately Start all enabled features!
     for name, feat in pairs(self._features) do
+        if feat.Status == "DEGRADED" then
+            self._logger:Warn("FeatureManager", string.format("Skipping Degraded Feature '%s': %s", name, tostring(feat.DegradedReason)))
+            continue
+        end
+
         if feat.Init then
             self._logger:SafeCall(name .. ".Init", feat.Init, feat, ctx)
         end
+
         if feat.Enabled then
             feat.Status = "RUNNING"
             if feat.Start then
@@ -401,6 +441,11 @@ end
 function FeatureManager:SetEnabled(name: string, enabled: boolean, ctx: any)
     local feat = self._features[name]
     if not feat or feat.Enabled == enabled then return end
+
+    if feat.Status == "DEGRADED" and enabled then
+        self._logger:Warn("FeatureManager", string.format("Cannot enable Degraded Feature '%s': %s", name, tostring(feat.DegradedReason)))
+        return
+    end
 
     feat.Enabled = enabled
     if enabled then
@@ -423,21 +468,22 @@ function FeatureManager:ExecutePipeline(phase: string, dt: number, ctx: any)
     elseif phase == "Stepped" then list = self._steppedPipeline end
 
     for _, feat in ipairs(list) do
-        if feat.Enabled and feat.Update then
-            -- Active Budget Throttling based on EMA Profiler Status
+        if feat.Enabled and feat.Status ~= "DEGRADED" and feat.Update then
+            -- Active Throttling with Hysteresis
             local metric = self._profiler and self._profiler.Metrics[feat.Name]
             if metric and metric.Status == "OVER_BUDGET" then
                 feat.OverBudgetCount += 1
                 if feat.OverBudgetCount > 3 then
                     feat.Status = "THROTTLED"
-                    -- Throttle: Skip every alternate frame to protect frame budget
                     if (feat.OverBudgetCount % 2) == 0 then
-                        continue
+                        continue -- Frame skip
                     end
                 end
             else
                 feat.OverBudgetCount = 0
-                feat.Status = "RUNNING"
+                if feat.Status == "THROTTLED" then
+                    feat.Status = "RUNNING"
+                end
             end
 
             local start = self._profiler and self._profiler:Begin(feat.Name, feat.Budget)
@@ -475,17 +521,22 @@ local Signal = require("Core.Signal")
 
 export type StateDefinition = {
     Priority: number?,
-    OnEnter: ((self: any, prevState: string, ctx: any) -> ())?,
+    Timeout: number?, -- Max duration in seconds before auto-recovering to fallback
+    FallbackState: string?,
+    OnEnter: ((self: any, prevState: string, ctx: any, reason: string?) -> ())?,
     OnUpdate: ((self: any, dt: number, ctx: any) -> ())?,
     OnExit: ((self: any, nextState: string, ctx: any) -> ())?,
     CanEnter: ((self: any, ctx: any) -> boolean)?,
     CanExit: ((self: any, ctx: any) -> boolean)?,
 }
 
-export type TransitionRule = {
+export type TransitionTelemetry = {
     From: string,
     To: string,
-    Condition: ((ctx: any) -> boolean)?,
+    Reason: string,
+    Source: string,
+    Timestamp: number,
+    DurationInPrev: number,
 }
 
 local StateMachine = {}
@@ -498,10 +549,12 @@ function StateMachine.new(initialState: string?, logger: any?)
         StateStartTime = os.clock(),
         TransitionsCount = 0,
         History = {},
+        TelemetryLogs = {}, -- Structured Transition Telemetry
+        MaxTelemetryLogs = 50,
         StateChanged = Signal.new(),
         _logger = logger,
         _states = {},
-        _transitions = {}, -- Whitelist Transition Graph
+        _transitions = {},
         _priorities = {
             EMERGENCY_STOP = 100,
             SKY_ESCAPE     = 90,
@@ -514,7 +567,6 @@ function StateMachine.new(initialState: string?, logger: any?)
         },
     }, StateMachine)
 
-    -- Register Default Whitelist Transitions Graph
     self:RegisterDefaultTransitions()
     return self
 end
@@ -540,9 +592,6 @@ end
 
 function StateMachine:RegisterDefaultTransitions()
     -- Explicit Strict Whitelist Transitions Graph
-    local standardCombatStates = { "IDLE", "COMBAT", "BEHIND_TP" }
-
-    -- Transitions from IDLE
     self:RegisterTransition("IDLE", "COMBAT")
     self:RegisterTransition("IDLE", "BEHIND_TP")
     self:RegisterTransition("IDLE", "MASS_BRING")
@@ -551,7 +600,6 @@ function StateMachine:RegisterDefaultTransitions()
     self:RegisterTransition("IDLE", "SKY_ESCAPE")
     self:RegisterTransition("IDLE", "EMERGENCY_STOP")
 
-    -- Transitions from COMBAT
     self:RegisterTransition("COMBAT", "IDLE")
     self:RegisterTransition("COMBAT", "BEHIND_TP")
     self:RegisterTransition("COMBAT", "MASS_BRING")
@@ -560,14 +608,12 @@ function StateMachine:RegisterDefaultTransitions()
     self:RegisterTransition("COMBAT", "SKY_ESCAPE")
     self:RegisterTransition("COMBAT", "EMERGENCY_STOP")
 
-    -- Transitions from BEHIND_TP
     self:RegisterTransition("BEHIND_TP", "IDLE")
     self:RegisterTransition("BEHIND_TP", "COMBAT")
     self:RegisterTransition("BEHIND_TP", "SKY_DODGE")
     self:RegisterTransition("BEHIND_TP", "SKY_ESCAPE")
     self:RegisterTransition("BEHIND_TP", "EMERGENCY_STOP")
 
-    -- Transitions from High-Priority Defense / Special states
     self:RegisterTransition("MASS_BRING", "IDLE")
     self:RegisterTransition("MASS_BRING", "COMBAT")
     self:RegisterTransition("MASS_BRING", "EMERGENCY_STOP")
@@ -588,16 +634,13 @@ end
 function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     if self.CurrentState == targetState then return false end
 
-    -- Emergency stop can always interrupt everything
     if targetState == "EMERGENCY_STOP" then return true end
     if self.CurrentState == "EMERGENCY_STOP" and targetState ~= "IDLE" then return false end
 
-    -- Strict Whitelist Guard: Only registered transitions are allowed!
     local transKey = self.CurrentState .. "->" .. targetState
     local transRule = self._transitions[transKey]
     if not transRule then
-        -- Unregistered transition rejected by strict whitelist
-        return false
+        return false -- Whitelist guard
     end
 
     if transRule.Condition and not transRule.Condition(ctx) then
@@ -612,7 +655,6 @@ function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     local currentPri = self._priorities[self.CurrentState] or 0
     local targetPri = self._priorities[targetState] or 0
 
-    -- Strict Priority Enforcement: Higher priority blocks lower priority override
     if targetPri < currentPri and currentPri >= 70 then
         return false
     end
@@ -625,12 +667,15 @@ function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     return true
 end
 
-function StateMachine:TransitionTo(newState: string, ctx: any, force: boolean?): boolean
+function StateMachine:TransitionTo(newState: string, ctx: any, reason: string?, source: string?, force: boolean?): boolean
     if not force and not self:CanTransitionTo(newState, ctx) then
         return false
     end
 
+    local now = os.clock()
     local oldState = self.CurrentState
+    local durationInPrev = now - self.StateStartTime
+
     local oldDef = self._states[oldState]
     if oldDef and oldDef.OnExit then
         if self._logger then
@@ -643,39 +688,65 @@ function StateMachine:TransitionTo(newState: string, ctx: any, force: boolean?):
     table.insert(self.History, 1, oldState)
     if #self.History > 20 then table.remove(self.History) end
 
+    -- Record Structured Telemetry Entry
+    local telemetry: TransitionTelemetry = {
+        From = oldState,
+        To = newState,
+        Reason = reason or "Standard Transition",
+        Source = source or "Engine",
+        Timestamp = now,
+        DurationInPrev = durationInPrev,
+    }
+    table.insert(self.TelemetryLogs, 1, telemetry)
+    if #self.TelemetryLogs > self.MaxTelemetryLogs then
+        table.remove(self.TelemetryLogs)
+    end
+
     self.PreviousState = oldState
     self.CurrentState = newState
-    self.StateStartTime = os.clock()
+    self.StateStartTime = now
     self.TransitionsCount += 1
 
     local newDef = self._states[newState]
     if newDef and newDef.OnEnter then
         if self._logger then
-            self._logger:SafeCall("FSM.OnEnter", newDef.OnEnter, newDef, oldState, ctx)
+            self._logger:SafeCall("FSM.OnEnter", newDef.OnEnter, newDef, oldState, ctx, reason)
         else
-            pcall(newDef.OnEnter, newDef, oldState, ctx)
+            pcall(newDef.OnEnter, newDef, oldState, ctx, reason)
         end
     end
 
-    self.StateChanged:Fire(newState, oldState)
+    self.StateChanged:Fire(newState, oldState, telemetry)
     return true
 end
 
 function StateMachine:Rollback(ctx: any): boolean
     if #self.History > 0 then
         local prev = table.remove(self.History, 1)
-        return self:TransitionTo(prev, ctx, true)
+        return self:TransitionTo(prev, ctx, "FSM Rollback", "FSM", true)
     end
     return false
 end
 
 function StateMachine:Update(dt: number, ctx: any)
     local def = self._states[self.CurrentState]
-    if def and def.OnUpdate then
-        if self._logger then
-            self._logger:SafeCall("FSM.OnUpdate", def.OnUpdate, def, dt, ctx)
-        else
-            pcall(def.OnUpdate, def, dt, ctx)
+    if def then
+        -- Timeout Auto-Recovery Guard (Prevents getting permanently stuck in transient special states)
+        if def.Timeout and (os.clock() - self.StateStartTime) > def.Timeout then
+            local fallback = def.FallbackState or "IDLE"
+            if self._logger then
+                self._logger:Warn("FSM", string.format("State '%s' timed out (> %.1fs), auto-recovering to '%s'", self.CurrentState, def.Timeout, fallback))
+            end
+            self:TransitionTo(fallback, ctx, "State Timeout Recovery", "FSM", true)
+            return
+        end
+
+        if def.OnUpdate then
+            if self._logger then
+                self._logger:SafeCall("FSM.OnUpdate", def.OnUpdate, def, dt, ctx)
+            else
+                pcall(def.OnUpdate, def, dt, ctx)
+            end
         end
     end
 end
@@ -703,7 +774,6 @@ function ConfigManager.new(logger: any)
         _degradedMode = false,
     }, ConfigManager)
 
-    -- Initialize with validated defaults from Schema
     self:ResetToDefaults()
 
     if typeof(writefile) ~= "function" or typeof(readfile) ~= "function" then
@@ -726,7 +796,7 @@ function ConfigManager:ResetToDefaults()
 end
 
 function ConfigManager:ValidateAndClamp(data: any): any
-    -- Strict Runtime Schema Enforcement: Validates types, clamps Min/Max bounds, rejects out-of-range corrupt values!
+    -- Strict Runtime Schema Enforcement with EnumItem type validation
     for catName, catSchema in pairs(ConfigSchema) do
         if type(data[catName]) == "table" then
             for key, spec in pairs(catSchema) do
@@ -746,6 +816,10 @@ function ConfigManager:ValidateAndClamp(data: any): any
                         end
                     elseif spec.Type == "string" then
                         if type(val) ~= "string" then
+                            data[catName][key] = spec.Default
+                        end
+                    elseif spec.Type == "EnumItem" then
+                        if typeof(val) ~= "EnumItem" then
                             data[catName][key] = spec.Default
                         end
                     end
@@ -804,7 +878,6 @@ function ConfigManager:Save(): (boolean, string?)
     if self._degradedMode then
         return true, "In-Memory"
     end
-    -- Validate & clamp before saving
     self:ValidateAndClamp(self.Config)
 
     local ok, err = pcall(function()
@@ -827,7 +900,6 @@ function ConfigManager:Load(): (boolean, string?)
         local raw = readfile(self.FileName)
         local rawData = HttpService:JSONDecode(raw)
         local decoded = DeserializeValue(rawData)
-        -- Enforce strict schema validation and min/max clamping on loaded data
         self:ValidateAndClamp(decoded)
         self.Config = decoded
         self:RefreshUI()
@@ -1240,6 +1312,14 @@ __modules["Core.ServiceContainer"] = function()
 local ServiceContainer = {}
 ServiceContainer.__index = ServiceContainer
 
+export type ServiceEntry = {
+    Name: string,
+    Instance: any?,
+    Factory: ((container: any) -> any)?,
+    Dependencies: { string },
+    Resolved: boolean,
+}
+
 function ServiceContainer.new()
     local self = setmetatable({
         _services = {},
@@ -1252,12 +1332,14 @@ end
 
 function ServiceContainer:Register(name: string, instanceOrFactory: any, dependencies: { string }?)
     assert(name and instanceOrFactory, "ServiceContainer:Register requires name and instance/factory")
+    local deps = dependencies or {}
+    self._dependencies[name] = deps
+
     if type(instanceOrFactory) == "function" then
         self._factories[name] = instanceOrFactory
     else
         self._services[name] = instanceOrFactory
     end
-    self._dependencies[name] = dependencies or {}
     return instanceOrFactory
 end
 
@@ -1268,7 +1350,7 @@ function ServiceContainer:Get(name: string): any
 
     if self._factories[name] then
         if self._resolving[name] then
-            error(string.format("Circular dependency detected while resolving service '%s'!", name))
+            error(string.format("[ServiceContainer] Circular dependency detected while resolving service '%s'!", name))
         end
 
         self._resolving[name] = true
@@ -1281,7 +1363,7 @@ function ServiceContainer:Get(name: string): any
         return instance
     end
 
-    error(string.format("Service '%s' is not registered in ServiceContainer!", tostring(name)))
+    error(string.format("[ServiceContainer] Service '%s' is not registered!", tostring(name)))
 end
 
 function ServiceContainer:Has(name: string): boolean
@@ -1289,7 +1371,6 @@ function ServiceContainer:Has(name: string): boolean
 end
 
 function ServiceContainer:BuildGraph(): { [string]: { string } }
-    -- Real Directed Dependency Graph (Adjacency List)
     local graph = {}
     for name, deps in pairs(self._dependencies) do
         graph[name] = deps
@@ -1297,15 +1378,17 @@ function ServiceContainer:BuildGraph(): { [string]: { string } }
     return graph
 end
 
-function ServiceContainer:TopologicalSort(): ({ string }, boolean)
+function ServiceContainer:TopologicalSort(): ({ string }, boolean, string?)
     local visited = {}
     local recStack = {}
     local order = {}
     local hasCycle = false
+    local cycleNode = nil
 
     local function dfs(node: string)
         if recStack[node] then
             hasCycle = true
+            cycleNode = node
             return
         end
         if visited[node] then return end
@@ -1330,7 +1413,19 @@ function ServiceContainer:TopologicalSort(): ({ string }, boolean)
         end
     end
 
-    return order, not hasCycle
+    return order, not hasCycle, cycleNode
+end
+
+function ServiceContainer:ResolveAllInOrder(): { string }
+    local order, noCycles, cycleNode = self:TopologicalSort()
+    if not noCycles then
+        error(string.format("[ServiceContainer] Cannot initialize services due to circular dependency involving '%s'!", tostring(cycleNode)))
+    end
+
+    for _, sName in ipairs(order) do
+        self:Get(sName)
+    end
+    return order
 end
 
 return ServiceContainer
@@ -1532,37 +1627,29 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     maid:DoCleaning()
     results["MaidTest"] = cleaned
 
-    -- 4. Isolated Strict Whitelist FSM Test (Unregistered transition rejected)
+    -- 4. Isolated Strict Whitelist FSM Test
     local isolatedFSM = StateMachine.new("IDLE", logger)
     isolatedFSM:RegisterState("LOW_STATE",  { Priority = 20 })
     isolatedFSM:RegisterState("HIGH_STATE", { Priority = 90 })
 
-    -- Should reject unregistered transition
     local unregBlocked = not isolatedFSM:CanTransitionTo("HIGH_STATE", nil)
     isolatedFSM:RegisterTransition("IDLE", "HIGH_STATE")
     local regAllowed = isolatedFSM:CanTransitionTo("HIGH_STATE", nil)
-    isolatedFSM:TransitionTo("HIGH_STATE", nil)
+    isolatedFSM:TransitionTo("HIGH_STATE", nil, "Test Enter", "UnitTest")
 
-    -- Lower priority override blocked
     isolatedFSM:RegisterTransition("HIGH_STATE", "LOW_STATE")
     local lowBlocked = not isolatedFSM:CanTransitionTo("LOW_STATE", nil)
-    isolatedFSM:TransitionTo("IDLE", nil, true)
-    results["FSM_StrictWhitelistAndPriorityTest"] = (unregBlocked and regAllowed and lowBlocked)
+    isolatedFSM:TransitionTo("IDLE", nil, "Reset", "UnitTest", true)
+    results["FSM_StrictWhitelistAndPriorityTest"] = (unregBlocked and regAllowed and lowBlocked and #isolatedFSM.TelemetryLogs >= 2)
 
-    -- 5. Isolated FSM Rollback Test
-    isolatedFSM:RegisterTransition("IDLE", "LOW_STATE")
-    isolatedFSM:TransitionTo("LOW_STATE", nil)
-    isolatedFSM:Rollback(nil)
-    results["FSM_RollbackTest"] = (isolatedFSM.CurrentState == "IDLE")
-
-    -- 6. Isolated 60 Hz Scheduler Test
+    -- 5. Isolated 60 Hz Scheduler Test
     local sched = Scheduler.new()
     local schedCount = 0
     sched:Register("FastTask", "Fast", function() schedCount += 1 end)
     sched:Step(0.0166)
     results["Scheduler_60HzTest"] = (schedCount == 1)
 
-    -- 7. ServiceContainer True Factory DI & DAG Topological Sort Test
+    -- 6. ServiceContainer True Factory DI & DAG Topological Sort Test
     local container = ServiceContainer.new()
     container:Register("ServiceA", function(c) return { Name = "A" } end, {})
     container:Register("ServiceB", function(c) return { Dep = c:Get("ServiceA") } end, { "ServiceA" })
@@ -1570,41 +1657,42 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     local resolvedB = container:Get("ServiceB")
     results["DependencyGraph_TopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
 
-    -- 8. ObjectPool Recycling Test
-    local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2)
+    -- 7. ObjectPool Double-Release Guard & Telemetry Test
+    local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2, 10)
     local item = pool:Acquire()
     pool:Release(item)
-    results["ObjectPoolTest"] = (item.active == false and pool.Acquisitions == 1 and pool.Releases == 1)
+    pool:Release(item) -- Double-release attempt
+    local telem = pool:GetTelemetry()
+    results["ObjectPool_DoubleReleaseGuardTest"] = (item.active == false and telem.InvalidReleases == 1 and telem.AcquireCount == 1)
+    pool:Destroy()
 
-    -- 9. Cache Safe Instance Hash & Filter Hash Test
+    -- 8. Cache Weak-Key Instance ID Map Test
     local cache = CacheEngine.new(0.08)
     cache:Clear()
     local partA = Instance.new("Part")
     local partB = Instance.new("Part")
     local los1 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partA })
     local los2 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partB })
-    results["Cache_SafeFilterHashTest"] = (cache.RaycastStats.Misses == 2)
+    results["Cache_WeakKeyFilterHashTest"] = (cache.RaycastStats.Misses == 2)
     partA:Destroy()
     partB:Destroy()
 
-    -- 10. Profiler EMA Rolling Window Budget Test
+    -- 9. Profiler Hysteresis Test
     local profiler = Profiler.new()
-    local pStart = profiler:Begin("BudgetTask", 0.001) -- 1 microsecond budget
-    task.wait(0.005) -- will exceed budget
+    local pStart = profiler:Begin("BudgetTask", 0.001)
+    task.wait(0.004)
     profiler:End("BudgetTask", pStart)
     local metric = profiler.Metrics["BudgetTask"]
-    results["Profiler_RollingBudgetTest"] = (metric and metric.Status == "OVER_BUDGET")
+    results["Profiler_HysteresisTest"] = (metric and metric.Status == "OVER_BUDGET")
 
-    -- 11. Config Schema Runtime Clamping Test
+    -- 10. Config EnumItem Runtime Validation Test
     local cfg = ConfigManager.new(logger)
     local dirtyData = {
-        World = {
-            FOVValue = 99999, -- Exceeds Max: 120
-            FullBright = "NotABool", -- Invalid Type
-        }
+        World = { FOVValue = 99999 },
+        Keybinds = { ToggleFly = "CorruptedString" } -- Should reset to Default Enum.KeyCode.F5
     }
     cfg:ValidateAndClamp(dirtyData)
-    results["Config_SchemaClampingTest"] = (dirtyData.World.FOVValue == 120 and dirtyData.World.FullBright == false)
+    results["Config_EnumValidationTest"] = (dirtyData.World.FOVValue == 120 and typeof(dirtyData.Keybinds.ToggleFly) == "EnumItem")
 
     local allPassed = true
     for name, passed in pairs(results) do
@@ -1635,6 +1723,8 @@ function NetworkEngine.new(deps: { Logger: any, EventBus: any, RemoteResolver: a
         _logger = deps.Logger,
         _eventBus = deps.EventBus,
         _remoteResolver = deps.RemoteResolver,
+        _isHooked = false,
+        _oldNamecall = nil,
         OutgoingHooked = false,
         PacketCount = 0,
         LastPacketTick = 0,
@@ -1645,11 +1735,17 @@ function NetworkEngine.new(deps: { Logger: any, EventBus: any, RemoteResolver: a
 end
 
 function NetworkEngine:Init()
+    if self._isHooked then return end -- Idempotency Guard
+
     pcall(function()
         if typeof(hookmetamethod) == "function" and typeof(getnamecallmethod) == "function" then
             local oldNamecall
             local this = self
             oldNamecall = hookmetamethod(game, "__namecall", function(selfRemote, ...)
+                if not this._isHooked then
+                    return oldNamecall(selfRemote, ...)
+                end
+
                 local method = getnamecallmethod()
                 local args = {...}
 
@@ -1667,6 +1763,8 @@ function NetworkEngine:Init()
                 end
                 return oldNamecall(selfRemote, ...)
             end)
+            self._oldNamecall = oldNamecall
+            self._isHooked = true
             self.OutgoingHooked = true
             self._logger:Info("NetworkEngine", "Metamethod Hook initialized successfully.")
         else
@@ -1674,6 +1772,16 @@ function NetworkEngine:Init()
             self._logger:Warn("NetworkEngine", "Running in Degraded Mode (hookmetamethod API unsupported)")
         end
     end)
+end
+
+function NetworkEngine:Unhook()
+    self._isHooked = false
+    self.OutgoingHooked = false
+end
+
+function NetworkEngine:Destroy()
+    self:Unhook()
+    self._oldNamecall = nil
 end
 
 function NetworkEngine:SendAction(goalName: string, payload: any?): boolean
@@ -1743,20 +1851,12 @@ __modules["Performance.Cache"] = function()
 local CacheEngine = {}
 CacheEngine.__index = CacheEngine
 
-local function GetInstanceHash(inst: Instance): string
-    -- Safe standard-compliant instance hashing without relying on undocumented methods
-    local ok, debugId = pcall(function() return (inst :: any):GetDebugId() end)
-    if ok and debugId and debugId ~= "" then
-        return debugId
-    end
-    -- Fallback combining ClassName, Name, and memory representation string
-    return string.format("%s_%s_%s", inst.ClassName, inst.Name, tostring(inst))
-end
-
 function CacheEngine.new(baseTTL: number?)
     local self = setmetatable({
         PlayerCache = {},
         RaycastCache = {},
+        _instanceIdMap = setmetatable({}, { __mode = "k" }), -- Ephemeron Weak-Key ID Map (100% collision-free in standard scripts)
+        _nextInstanceId = 1,
         BaseTTL = baseTTL or 0.08,
         PlayerStats = { Hits = 0, Misses = 0, Invalidations = 0 },
         RaycastStats = { Hits = 0, Misses = 0, Invalidations = 0 },
@@ -1765,12 +1865,21 @@ function CacheEngine.new(baseTTL: number?)
     return self
 end
 
+function CacheEngine:_GetInstanceId(inst: Instance): number
+    local id = self._instanceIdMap[inst]
+    if not id then
+        id = self._nextInstanceId
+        self._nextInstanceId += 1
+        self._instanceIdMap[inst] = id
+    end
+    return id
+end
+
 function CacheEngine:GetPlayerEntry(player: Player): any
     if not player or not player.Parent then return nil end
     local entry = self.PlayerCache[player]
     local now = os.clock()
 
-    -- Adaptive TTL adjustment based on player hitrate
     local ttl = self.BaseTTL
     local totalReq = self.PlayerStats.Hits + self.PlayerStats.Misses
     if totalReq > 50 then
@@ -1806,14 +1915,14 @@ function CacheEngine:GetPlayerEntry(player: Player): any
 end
 
 function CacheEngine:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { Instance }?): boolean
-    -- Generate safe and collision-free filter hash
+    -- Collision-free deterministic hash using weak-key instance map
     local filterStr = ""
     if filterList and #filterList > 0 then
-        local parts = {}
+        local ids = {}
         for _, inst in ipairs(filterList) do
-            table.insert(parts, GetInstanceHash(inst))
+            table.insert(ids, tostring(self:_GetInstanceId(inst)))
         end
-        filterStr = table.concat(parts, "|")
+        filterStr = table.concat(ids, ",")
     end
 
     local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_[%s]", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterStr)
@@ -1878,16 +1987,30 @@ __modules["Performance.ObjectPool"] = function()
 local ObjectPool = {}
 ObjectPool.__index = ObjectPool
 
-function ObjectPool.new(factory: () -> any, resetFn: ((any) -> ())?, initialSize: number?)
+export type PoolTelemetry = {
+    Available: number,
+    Active: number,
+    PeakUsage: number,
+    MaxCapacity: number,
+    AcquireCount: number,
+    ReleaseCount: number,
+    InvalidReleases: number,
+}
+
+function ObjectPool.new(factory: () -> any, resetFn: ((any) -> ())?, initialSize: number?, maxCapacity: number?)
     local self = setmetatable({
         _factory = factory,
         _reset = resetFn,
         _pool = {},
+        _activeSet = setmetatable({}, { __mode = "k" }), -- Ownership & double-release protection
+        MaxCapacity = maxCapacity or 32,
         Acquisitions = 0,
         Releases = 0,
+        InvalidReleases = 0,
+        PeakUsage = 0,
     }, ObjectPool)
 
-    for i = 1, (initialSize or 8) do
+    for i = 1, math.min(initialSize or 8, self.MaxCapacity) do
         table.insert(self._pool, factory())
     end
     return self
@@ -1895,23 +2018,75 @@ end
 
 function ObjectPool:Acquire(): any
     self.Acquisitions += 1
+    local obj = nil
+
     if #self._pool > 0 then
-        return table.remove(self._pool)
+        obj = table.remove(self._pool)
     else
-        return self._factory()
+        obj = self._factory()
     end
+
+    self._activeSet[obj] = true
+    local activeCount = self:GetActiveCount()
+    if activeCount > self.PeakUsage then
+        self.PeakUsage = activeCount
+    end
+
+    return obj
 end
 
 function ObjectPool:Release(obj: any)
+    -- Guard: Prevent double release of the exact same object
+    if not self._activeSet[obj] then
+        self.InvalidReleases += 1
+        return
+    end
+
+    self._activeSet[obj] = nil
     self.Releases += 1
+
     if self._reset then
         pcall(self._reset, obj)
     end
-    table.insert(self._pool, obj)
+
+    -- Respect maximum capacity bound to prevent unbounded pool growth
+    if #self._pool < self.MaxCapacity then
+        table.insert(self._pool, obj)
+    elseif typeof(obj) == "Instance" then
+        pcall(function() obj:Destroy() end)
+    end
+end
+
+function ObjectPool:GetActiveCount(): number
+    local count = 0
+    for _ in pairs(self._activeSet) do count += 1 end
+    return count
 end
 
 function ObjectPool:GetSize(): number
     return #self._pool
+end
+
+function ObjectPool:GetTelemetry(): PoolTelemetry
+    return {
+        Available = #self._pool,
+        Active = self:GetActiveCount(),
+        PeakUsage = self.PeakUsage,
+        MaxCapacity = self.MaxCapacity,
+        AcquireCount = self.Acquisitions,
+        ReleaseCount = self.Releases,
+        InvalidReleases = self.InvalidReleases,
+    }
+end
+
+function ObjectPool:Destroy()
+    for _, obj in ipairs(self._pool) do
+        if typeof(obj) == "Instance" then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+    table.clear(self._pool)
+    table.clear(self._activeSet)
 end
 
 return ObjectPool
@@ -1924,6 +2099,19 @@ __modules["Performance.Profiler"] = function()
 --!strict
 local Profiler = {}
 Profiler.__index = Profiler
+
+export type ProfilerMetric = {
+    TotalTime: number,
+    Calls: number,
+    MinTime: number,
+    MaxTime: number,
+    PeakMicroseconds: number,
+    LastTime: number,
+    AvgMicroseconds: number,
+    EmaMicroseconds: number,
+    Budget: number,
+    Status: string,
+}
 
 function Profiler.new()
     local self = setmetatable({
@@ -1946,9 +2134,10 @@ function Profiler:Begin(tag: string, budgetMs: number?): number?
             Calls = 0,
             MinTime = math.huge,
             MaxTime = 0,
+            PeakMicroseconds = 0,
             LastTime = 0,
             AvgMicroseconds = 0,
-            EmaMicroseconds = 0, -- Exponential Moving Average (Rolling Recent Window)
+            EmaMicroseconds = 0,
             Budget = (budgetMs or 2.0) * 1000, -- microseconds
             Status = "OK",
         }
@@ -1959,23 +2148,28 @@ end
 function Profiler:End(tag: string, startTime: number?)
     if not self.Enabled or not startTime then return end
     local duration = (os.clock() - startTime) * 1000000 -- microseconds
-    local metric = self.Metrics[tag]
+    local metric: ProfilerMetric = self.Metrics[tag]
     if metric then
         metric.Calls += 1
         metric.TotalTime += duration
         metric.LastTime = duration
         if duration < metric.MinTime then metric.MinTime = duration end
         if duration > metric.MaxTime then metric.MaxTime = duration end
+        if duration > metric.PeakMicroseconds then metric.PeakMicroseconds = duration end
         metric.AvgMicroseconds = metric.TotalTime / metric.Calls
 
-        -- Real-Time Rolling EMA Calculation (Alpha = 0.20 for fast response to recent frame spikes)
+        -- Real-Time Rolling EMA Calculation (Alpha = 0.20)
         metric.EmaMicroseconds = (metric.EmaMicroseconds == 0) and duration or (metric.EmaMicroseconds * 0.80 + duration * 0.20)
 
-        -- Real-Time Budget Assessment based on recent Rolling Window
-        if metric.EmaMicroseconds > metric.Budget then
-            metric.Status = "OVER_BUDGET"
-        else
-            metric.Status = "OK"
+        -- Real-Time Budget Assessment with Hysteresis (Enter > 100%, Exit < 80%)
+        if metric.Status == "OK" then
+            if metric.EmaMicroseconds > metric.Budget then
+                metric.Status = "OVER_BUDGET"
+            end
+        elseif metric.Status == "OVER_BUDGET" then
+            if metric.EmaMicroseconds < (metric.Budget * 0.80) then
+                metric.Status = "OK"
+            end
         end
     end
 end

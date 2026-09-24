@@ -2,6 +2,14 @@
 local ServiceContainer = {}
 ServiceContainer.__index = ServiceContainer
 
+export type ServiceEntry = {
+    Name: string,
+    Instance: any?,
+    Factory: ((container: any) -> any)?,
+    Dependencies: { string },
+    Resolved: boolean,
+}
+
 function ServiceContainer.new()
     local self = setmetatable({
         _services = {},
@@ -14,12 +22,14 @@ end
 
 function ServiceContainer:Register(name: string, instanceOrFactory: any, dependencies: { string }?)
     assert(name and instanceOrFactory, "ServiceContainer:Register requires name and instance/factory")
+    local deps = dependencies or {}
+    self._dependencies[name] = deps
+
     if type(instanceOrFactory) == "function" then
         self._factories[name] = instanceOrFactory
     else
         self._services[name] = instanceOrFactory
     end
-    self._dependencies[name] = dependencies or {}
     return instanceOrFactory
 end
 
@@ -30,7 +40,7 @@ function ServiceContainer:Get(name: string): any
 
     if self._factories[name] then
         if self._resolving[name] then
-            error(string.format("Circular dependency detected while resolving service '%s'!", name))
+            error(string.format("[ServiceContainer] Circular dependency detected while resolving service '%s'!", name))
         end
 
         self._resolving[name] = true
@@ -43,7 +53,7 @@ function ServiceContainer:Get(name: string): any
         return instance
     end
 
-    error(string.format("Service '%s' is not registered in ServiceContainer!", tostring(name)))
+    error(string.format("[ServiceContainer] Service '%s' is not registered!", tostring(name)))
 end
 
 function ServiceContainer:Has(name: string): boolean
@@ -51,7 +61,6 @@ function ServiceContainer:Has(name: string): boolean
 end
 
 function ServiceContainer:BuildGraph(): { [string]: { string } }
-    -- Real Directed Dependency Graph (Adjacency List)
     local graph = {}
     for name, deps in pairs(self._dependencies) do
         graph[name] = deps
@@ -59,15 +68,17 @@ function ServiceContainer:BuildGraph(): { [string]: { string } }
     return graph
 end
 
-function ServiceContainer:TopologicalSort(): ({ string }, boolean)
+function ServiceContainer:TopologicalSort(): ({ string }, boolean, string?)
     local visited = {}
     local recStack = {}
     local order = {}
     local hasCycle = false
+    local cycleNode = nil
 
     local function dfs(node: string)
         if recStack[node] then
             hasCycle = true
+            cycleNode = node
             return
         end
         if visited[node] then return end
@@ -92,7 +103,19 @@ function ServiceContainer:TopologicalSort(): ({ string }, boolean)
         end
     end
 
-    return order, not hasCycle
+    return order, not hasCycle, cycleNode
+end
+
+function ServiceContainer:ResolveAllInOrder(): { string }
+    local order, noCycles, cycleNode = self:TopologicalSort()
+    if not noCycles then
+        error(string.format("[ServiceContainer] Cannot initialize services due to circular dependency involving '%s'!", tostring(cycleNode)))
+    end
+
+    for _, sName in ipairs(order) do
+        self:Get(sName)
+    end
+    return order
 end
 
 return ServiceContainer

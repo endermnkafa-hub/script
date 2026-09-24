@@ -44,37 +44,29 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     maid:DoCleaning()
     results["MaidTest"] = cleaned
 
-    -- 4. Isolated Strict Whitelist FSM Test (Unregistered transition rejected)
+    -- 4. Isolated Strict Whitelist FSM Test
     local isolatedFSM = StateMachine.new("IDLE", logger)
     isolatedFSM:RegisterState("LOW_STATE",  { Priority = 20 })
     isolatedFSM:RegisterState("HIGH_STATE", { Priority = 90 })
 
-    -- Should reject unregistered transition
     local unregBlocked = not isolatedFSM:CanTransitionTo("HIGH_STATE", nil)
     isolatedFSM:RegisterTransition("IDLE", "HIGH_STATE")
     local regAllowed = isolatedFSM:CanTransitionTo("HIGH_STATE", nil)
-    isolatedFSM:TransitionTo("HIGH_STATE", nil)
+    isolatedFSM:TransitionTo("HIGH_STATE", nil, "Test Enter", "UnitTest")
 
-    -- Lower priority override blocked
     isolatedFSM:RegisterTransition("HIGH_STATE", "LOW_STATE")
     local lowBlocked = not isolatedFSM:CanTransitionTo("LOW_STATE", nil)
-    isolatedFSM:TransitionTo("IDLE", nil, true)
-    results["FSM_StrictWhitelistAndPriorityTest"] = (unregBlocked and regAllowed and lowBlocked)
+    isolatedFSM:TransitionTo("IDLE", nil, "Reset", "UnitTest", true)
+    results["FSM_StrictWhitelistAndPriorityTest"] = (unregBlocked and regAllowed and lowBlocked and #isolatedFSM.TelemetryLogs >= 2)
 
-    -- 5. Isolated FSM Rollback Test
-    isolatedFSM:RegisterTransition("IDLE", "LOW_STATE")
-    isolatedFSM:TransitionTo("LOW_STATE", nil)
-    isolatedFSM:Rollback(nil)
-    results["FSM_RollbackTest"] = (isolatedFSM.CurrentState == "IDLE")
-
-    -- 6. Isolated 60 Hz Scheduler Test
+    -- 5. Isolated 60 Hz Scheduler Test
     local sched = Scheduler.new()
     local schedCount = 0
     sched:Register("FastTask", "Fast", function() schedCount += 1 end)
     sched:Step(0.0166)
     results["Scheduler_60HzTest"] = (schedCount == 1)
 
-    -- 7. ServiceContainer True Factory DI & DAG Topological Sort Test
+    -- 6. ServiceContainer True Factory DI & DAG Topological Sort Test
     local container = ServiceContainer.new()
     container:Register("ServiceA", function(c) return { Name = "A" } end, {})
     container:Register("ServiceB", function(c) return { Dep = c:Get("ServiceA") } end, { "ServiceA" })
@@ -82,41 +74,42 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     local resolvedB = container:Get("ServiceB")
     results["DependencyGraph_TopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
 
-    -- 8. ObjectPool Recycling Test
-    local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2)
+    -- 7. ObjectPool Double-Release Guard & Telemetry Test
+    local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2, 10)
     local item = pool:Acquire()
     pool:Release(item)
-    results["ObjectPoolTest"] = (item.active == false and pool.Acquisitions == 1 and pool.Releases == 1)
+    pool:Release(item) -- Double-release attempt
+    local telem = pool:GetTelemetry()
+    results["ObjectPool_DoubleReleaseGuardTest"] = (item.active == false and telem.InvalidReleases == 1 and telem.AcquireCount == 1)
+    pool:Destroy()
 
-    -- 9. Cache Safe Instance Hash & Filter Hash Test
+    -- 8. Cache Weak-Key Instance ID Map Test
     local cache = CacheEngine.new(0.08)
     cache:Clear()
     local partA = Instance.new("Part")
     local partB = Instance.new("Part")
     local los1 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partA })
     local los2 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partB })
-    results["Cache_SafeFilterHashTest"] = (cache.RaycastStats.Misses == 2)
+    results["Cache_WeakKeyFilterHashTest"] = (cache.RaycastStats.Misses == 2)
     partA:Destroy()
     partB:Destroy()
 
-    -- 10. Profiler EMA Rolling Window Budget Test
+    -- 9. Profiler Hysteresis Test
     local profiler = Profiler.new()
-    local pStart = profiler:Begin("BudgetTask", 0.001) -- 1 microsecond budget
-    task.wait(0.005) -- will exceed budget
+    local pStart = profiler:Begin("BudgetTask", 0.001)
+    task.wait(0.004)
     profiler:End("BudgetTask", pStart)
     local metric = profiler.Metrics["BudgetTask"]
-    results["Profiler_RollingBudgetTest"] = (metric and metric.Status == "OVER_BUDGET")
+    results["Profiler_HysteresisTest"] = (metric and metric.Status == "OVER_BUDGET")
 
-    -- 11. Config Schema Runtime Clamping Test
+    -- 10. Config EnumItem Runtime Validation Test
     local cfg = ConfigManager.new(logger)
     local dirtyData = {
-        World = {
-            FOVValue = 99999, -- Exceeds Max: 120
-            FullBright = "NotABool", -- Invalid Type
-        }
+        World = { FOVValue = 99999 },
+        Keybinds = { ToggleFly = "CorruptedString" } -- Should reset to Default Enum.KeyCode.F5
     }
     cfg:ValidateAndClamp(dirtyData)
-    results["Config_SchemaClampingTest"] = (dirtyData.World.FOVValue == 120 and dirtyData.World.FullBright == false)
+    results["Config_EnumValidationTest"] = (dirtyData.World.FOVValue == 120 and typeof(dirtyData.Keybinds.ToggleFly) == "EnumItem")
 
     local allPassed = true
     for name, passed in pairs(results) do

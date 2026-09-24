@@ -2,6 +2,19 @@
 local Profiler = {}
 Profiler.__index = Profiler
 
+export type ProfilerMetric = {
+    TotalTime: number,
+    Calls: number,
+    MinTime: number,
+    MaxTime: number,
+    PeakMicroseconds: number,
+    LastTime: number,
+    AvgMicroseconds: number,
+    EmaMicroseconds: number,
+    Budget: number,
+    Status: string,
+}
+
 function Profiler.new()
     local self = setmetatable({
         Enabled = true,
@@ -23,9 +36,10 @@ function Profiler:Begin(tag: string, budgetMs: number?): number?
             Calls = 0,
             MinTime = math.huge,
             MaxTime = 0,
+            PeakMicroseconds = 0,
             LastTime = 0,
             AvgMicroseconds = 0,
-            EmaMicroseconds = 0, -- Exponential Moving Average (Rolling Recent Window)
+            EmaMicroseconds = 0,
             Budget = (budgetMs or 2.0) * 1000, -- microseconds
             Status = "OK",
         }
@@ -36,23 +50,28 @@ end
 function Profiler:End(tag: string, startTime: number?)
     if not self.Enabled or not startTime then return end
     local duration = (os.clock() - startTime) * 1000000 -- microseconds
-    local metric = self.Metrics[tag]
+    local metric: ProfilerMetric = self.Metrics[tag]
     if metric then
         metric.Calls += 1
         metric.TotalTime += duration
         metric.LastTime = duration
         if duration < metric.MinTime then metric.MinTime = duration end
         if duration > metric.MaxTime then metric.MaxTime = duration end
+        if duration > metric.PeakMicroseconds then metric.PeakMicroseconds = duration end
         metric.AvgMicroseconds = metric.TotalTime / metric.Calls
 
-        -- Real-Time Rolling EMA Calculation (Alpha = 0.20 for fast response to recent frame spikes)
+        -- Real-Time Rolling EMA Calculation (Alpha = 0.20)
         metric.EmaMicroseconds = (metric.EmaMicroseconds == 0) and duration or (metric.EmaMicroseconds * 0.80 + duration * 0.20)
 
-        -- Real-Time Budget Assessment based on recent Rolling Window
-        if metric.EmaMicroseconds > metric.Budget then
-            metric.Status = "OVER_BUDGET"
-        else
-            metric.Status = "OK"
+        -- Real-Time Budget Assessment with Hysteresis (Enter > 100%, Exit < 80%)
+        if metric.Status == "OK" then
+            if metric.EmaMicroseconds > metric.Budget then
+                metric.Status = "OVER_BUDGET"
+            end
+        elseif metric.Status == "OVER_BUDGET" then
+            if metric.EmaMicroseconds < (metric.Budget * 0.80) then
+                metric.Status = "OK"
+            end
         end
     end
 end

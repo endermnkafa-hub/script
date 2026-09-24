@@ -2,20 +2,12 @@
 local CacheEngine = {}
 CacheEngine.__index = CacheEngine
 
-local function GetInstanceHash(inst: Instance): string
-    -- Safe standard-compliant instance hashing without relying on undocumented methods
-    local ok, debugId = pcall(function() return (inst :: any):GetDebugId() end)
-    if ok and debugId and debugId ~= "" then
-        return debugId
-    end
-    -- Fallback combining ClassName, Name, and memory representation string
-    return string.format("%s_%s_%s", inst.ClassName, inst.Name, tostring(inst))
-end
-
 function CacheEngine.new(baseTTL: number?)
     local self = setmetatable({
         PlayerCache = {},
         RaycastCache = {},
+        _instanceIdMap = setmetatable({}, { __mode = "k" }), -- Ephemeron Weak-Key ID Map (100% collision-free in standard scripts)
+        _nextInstanceId = 1,
         BaseTTL = baseTTL or 0.08,
         PlayerStats = { Hits = 0, Misses = 0, Invalidations = 0 },
         RaycastStats = { Hits = 0, Misses = 0, Invalidations = 0 },
@@ -24,12 +16,21 @@ function CacheEngine.new(baseTTL: number?)
     return self
 end
 
+function CacheEngine:_GetInstanceId(inst: Instance): number
+    local id = self._instanceIdMap[inst]
+    if not id then
+        id = self._nextInstanceId
+        self._nextInstanceId += 1
+        self._instanceIdMap[inst] = id
+    end
+    return id
+end
+
 function CacheEngine:GetPlayerEntry(player: Player): any
     if not player or not player.Parent then return nil end
     local entry = self.PlayerCache[player]
     local now = os.clock()
 
-    -- Adaptive TTL adjustment based on player hitrate
     local ttl = self.BaseTTL
     local totalReq = self.PlayerStats.Hits + self.PlayerStats.Misses
     if totalReq > 50 then
@@ -65,14 +66,14 @@ function CacheEngine:GetPlayerEntry(player: Player): any
 end
 
 function CacheEngine:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { Instance }?): boolean
-    -- Generate safe and collision-free filter hash
+    -- Collision-free deterministic hash using weak-key instance map
     local filterStr = ""
     if filterList and #filterList > 0 then
-        local parts = {}
+        local ids = {}
         for _, inst in ipairs(filterList) do
-            table.insert(parts, GetInstanceHash(inst))
+            table.insert(ids, tostring(self:_GetInstanceId(inst)))
         end
-        filterStr = table.concat(parts, "|")
+        filterStr = table.concat(ids, ",")
     end
 
     local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_[%s]", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterStr)

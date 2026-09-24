@@ -3,17 +3,22 @@ local Signal = require("Core.Signal")
 
 export type StateDefinition = {
     Priority: number?,
-    OnEnter: ((self: any, prevState: string, ctx: any) -> ())?,
+    Timeout: number?, -- Max duration in seconds before auto-recovering to fallback
+    FallbackState: string?,
+    OnEnter: ((self: any, prevState: string, ctx: any, reason: string?) -> ())?,
     OnUpdate: ((self: any, dt: number, ctx: any) -> ())?,
     OnExit: ((self: any, nextState: string, ctx: any) -> ())?,
     CanEnter: ((self: any, ctx: any) -> boolean)?,
     CanExit: ((self: any, ctx: any) -> boolean)?,
 }
 
-export type TransitionRule = {
+export type TransitionTelemetry = {
     From: string,
     To: string,
-    Condition: ((ctx: any) -> boolean)?,
+    Reason: string,
+    Source: string,
+    Timestamp: number,
+    DurationInPrev: number,
 }
 
 local StateMachine = {}
@@ -26,10 +31,12 @@ function StateMachine.new(initialState: string?, logger: any?)
         StateStartTime = os.clock(),
         TransitionsCount = 0,
         History = {},
+        TelemetryLogs = {}, -- Structured Transition Telemetry
+        MaxTelemetryLogs = 50,
         StateChanged = Signal.new(),
         _logger = logger,
         _states = {},
-        _transitions = {}, -- Whitelist Transition Graph
+        _transitions = {},
         _priorities = {
             EMERGENCY_STOP = 100,
             SKY_ESCAPE     = 90,
@@ -42,7 +49,6 @@ function StateMachine.new(initialState: string?, logger: any?)
         },
     }, StateMachine)
 
-    -- Register Default Whitelist Transitions Graph
     self:RegisterDefaultTransitions()
     return self
 end
@@ -68,9 +74,6 @@ end
 
 function StateMachine:RegisterDefaultTransitions()
     -- Explicit Strict Whitelist Transitions Graph
-    local standardCombatStates = { "IDLE", "COMBAT", "BEHIND_TP" }
-
-    -- Transitions from IDLE
     self:RegisterTransition("IDLE", "COMBAT")
     self:RegisterTransition("IDLE", "BEHIND_TP")
     self:RegisterTransition("IDLE", "MASS_BRING")
@@ -79,7 +82,6 @@ function StateMachine:RegisterDefaultTransitions()
     self:RegisterTransition("IDLE", "SKY_ESCAPE")
     self:RegisterTransition("IDLE", "EMERGENCY_STOP")
 
-    -- Transitions from COMBAT
     self:RegisterTransition("COMBAT", "IDLE")
     self:RegisterTransition("COMBAT", "BEHIND_TP")
     self:RegisterTransition("COMBAT", "MASS_BRING")
@@ -88,14 +90,12 @@ function StateMachine:RegisterDefaultTransitions()
     self:RegisterTransition("COMBAT", "SKY_ESCAPE")
     self:RegisterTransition("COMBAT", "EMERGENCY_STOP")
 
-    -- Transitions from BEHIND_TP
     self:RegisterTransition("BEHIND_TP", "IDLE")
     self:RegisterTransition("BEHIND_TP", "COMBAT")
     self:RegisterTransition("BEHIND_TP", "SKY_DODGE")
     self:RegisterTransition("BEHIND_TP", "SKY_ESCAPE")
     self:RegisterTransition("BEHIND_TP", "EMERGENCY_STOP")
 
-    -- Transitions from High-Priority Defense / Special states
     self:RegisterTransition("MASS_BRING", "IDLE")
     self:RegisterTransition("MASS_BRING", "COMBAT")
     self:RegisterTransition("MASS_BRING", "EMERGENCY_STOP")
@@ -116,16 +116,13 @@ end
 function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     if self.CurrentState == targetState then return false end
 
-    -- Emergency stop can always interrupt everything
     if targetState == "EMERGENCY_STOP" then return true end
     if self.CurrentState == "EMERGENCY_STOP" and targetState ~= "IDLE" then return false end
 
-    -- Strict Whitelist Guard: Only registered transitions are allowed!
     local transKey = self.CurrentState .. "->" .. targetState
     local transRule = self._transitions[transKey]
     if not transRule then
-        -- Unregistered transition rejected by strict whitelist
-        return false
+        return false -- Whitelist guard
     end
 
     if transRule.Condition and not transRule.Condition(ctx) then
@@ -140,7 +137,6 @@ function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     local currentPri = self._priorities[self.CurrentState] or 0
     local targetPri = self._priorities[targetState] or 0
 
-    -- Strict Priority Enforcement: Higher priority blocks lower priority override
     if targetPri < currentPri and currentPri >= 70 then
         return false
     end
@@ -153,12 +149,15 @@ function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     return true
 end
 
-function StateMachine:TransitionTo(newState: string, ctx: any, force: boolean?): boolean
+function StateMachine:TransitionTo(newState: string, ctx: any, reason: string?, source: string?, force: boolean?): boolean
     if not force and not self:CanTransitionTo(newState, ctx) then
         return false
     end
 
+    local now = os.clock()
     local oldState = self.CurrentState
+    local durationInPrev = now - self.StateStartTime
+
     local oldDef = self._states[oldState]
     if oldDef and oldDef.OnExit then
         if self._logger then
@@ -171,39 +170,65 @@ function StateMachine:TransitionTo(newState: string, ctx: any, force: boolean?):
     table.insert(self.History, 1, oldState)
     if #self.History > 20 then table.remove(self.History) end
 
+    -- Record Structured Telemetry Entry
+    local telemetry: TransitionTelemetry = {
+        From = oldState,
+        To = newState,
+        Reason = reason or "Standard Transition",
+        Source = source or "Engine",
+        Timestamp = now,
+        DurationInPrev = durationInPrev,
+    }
+    table.insert(self.TelemetryLogs, 1, telemetry)
+    if #self.TelemetryLogs > self.MaxTelemetryLogs then
+        table.remove(self.TelemetryLogs)
+    end
+
     self.PreviousState = oldState
     self.CurrentState = newState
-    self.StateStartTime = os.clock()
+    self.StateStartTime = now
     self.TransitionsCount += 1
 
     local newDef = self._states[newState]
     if newDef and newDef.OnEnter then
         if self._logger then
-            self._logger:SafeCall("FSM.OnEnter", newDef.OnEnter, newDef, oldState, ctx)
+            self._logger:SafeCall("FSM.OnEnter", newDef.OnEnter, newDef, oldState, ctx, reason)
         else
-            pcall(newDef.OnEnter, newDef, oldState, ctx)
+            pcall(newDef.OnEnter, newDef, oldState, ctx, reason)
         end
     end
 
-    self.StateChanged:Fire(newState, oldState)
+    self.StateChanged:Fire(newState, oldState, telemetry)
     return true
 end
 
 function StateMachine:Rollback(ctx: any): boolean
     if #self.History > 0 then
         local prev = table.remove(self.History, 1)
-        return self:TransitionTo(prev, ctx, true)
+        return self:TransitionTo(prev, ctx, "FSM Rollback", "FSM", true)
     end
     return false
 end
 
 function StateMachine:Update(dt: number, ctx: any)
     local def = self._states[self.CurrentState]
-    if def and def.OnUpdate then
-        if self._logger then
-            self._logger:SafeCall("FSM.OnUpdate", def.OnUpdate, def, dt, ctx)
-        else
-            pcall(def.OnUpdate, def, dt, ctx)
+    if def then
+        -- Timeout Auto-Recovery Guard (Prevents getting permanently stuck in transient special states)
+        if def.Timeout and (os.clock() - self.StateStartTime) > def.Timeout then
+            local fallback = def.FallbackState or "IDLE"
+            if self._logger then
+                self._logger:Warn("FSM", string.format("State '%s' timed out (> %.1fs), auto-recovering to '%s'", self.CurrentState, def.Timeout, fallback))
+            end
+            self:TransitionTo(fallback, ctx, "State Timeout Recovery", "FSM", true)
+            return
+        end
+
+        if def.OnUpdate then
+            if self._logger then
+                self._logger:SafeCall("FSM.OnUpdate", def.OnUpdate, def, dt, ctx)
+            else
+                pcall(def.OnUpdate, def, dt, ctx)
+            end
         end
     end
 end

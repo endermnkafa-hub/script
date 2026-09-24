@@ -3,6 +3,7 @@ local ServiceContainer = require("Core.ServiceContainer")
 local Signal = require("Core.Signal")
 local EventBus = require("Core.EventBus")
 local Logger = require("Core.Logger")
+local Maid = require("Core.Maid")
 local Scheduler = require("Core.Scheduler")
 local StateMachine = require("Architecture.StateMachine")
 local FeatureManager = require("Architecture.FeatureManager")
@@ -25,14 +26,27 @@ local SelfDiagnostics = require("Diagnostics.SelfDiagnostics")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 
-local Bootstrap = {}
+local Bootstrap = {
+    _maid = nil :: any,
+    _isInitialized = false,
+    Container = nil :: any,
+}
 
 function Bootstrap:Init()
+    if self._isInitialized then
+        -- Prevent Duplicate Loops: Destroy previous instance symmetrically
+        self:Destroy()
+    end
+
+    self._maid = Maid.new()
+    self._isInitialized = true
+
     local logger = Logger.new(3)
-    logger:Info("Bootstrap", "=== 4080 HUB v8.5 TRUE EXPERT/SPECIALIST FRAMEWORK BOOTING ===")
+    logger:Info("Bootstrap", "=== 4080 HUB v9.0 PRODUCTION SPECIALIST FRAMEWORK BOOTING ===")
 
     -- 1. Create Core Instances (Instance-based OOP Architecture)
     local container = ServiceContainer.new()
+    self.Container = container
     local eventBus = EventBus.new()
     local scheduler = Scheduler.new()
     local profiler = Profiler.new()
@@ -42,22 +56,22 @@ function Bootstrap:Init()
     local configManager = ConfigManager.new(logger)
     local diagnostics = SelfDiagnostics.new(logger)
 
-    -- 2. Register Core Singletons / Factories into IoC Container
-    container:Register("Logger", logger)
-    container:Register("EventBus", eventBus)
-    container:Register("Scheduler", scheduler)
-    container:Register("Profiler", profiler)
-    container:Register("Cache", cache)
-    container:Register("StateMachine", fsm)
-    container:Register("FeatureManager", featureManager)
-    container:Register("ConfigManager", configManager)
-    container:Register("Diagnostics", diagnostics)
-    container:Register("ObjectPool", ObjectPool)
+    -- 2. Register Core Singletons into IoC Container
+    container:Register("Logger", logger, {})
+    container:Register("EventBus", eventBus, { "Logger" })
+    container:Register("Scheduler", scheduler, { "Logger" })
+    container:Register("Profiler", profiler, {})
+    container:Register("Cache", cache, {})
+    container:Register("StateMachine", fsm, { "Logger" })
+    container:Register("FeatureManager", featureManager, { "Logger", "Profiler" })
+    container:Register("ConfigManager", configManager, { "Logger" })
+    container:Register("Diagnostics", diagnostics, { "Logger" })
+    container:Register("ObjectPool", ObjectPool, {})
 
-    -- 3. Register Systems via True Constructor Dependency Injection
+    -- 3. Register Systems via True Constructor Dependency Injection with Explicit DAG Dependencies
     container:Register("RemoteResolver", function(c)
         return RemoteResolver.new(c:Get("Logger"))
-    end)
+    end, { "Logger" })
 
     container:Register("NetworkEngine", function(c)
         return NetworkEngine.new({
@@ -65,7 +79,7 @@ function Bootstrap:Init()
             EventBus = c:Get("EventBus"),
             RemoteResolver = c:Get("RemoteResolver"),
         })
-    end)
+    end, { "Logger", "EventBus", "RemoteResolver" })
 
     container:Register("EnemyState", function(c)
         return EnemyState.new({
@@ -73,7 +87,7 @@ function Bootstrap:Init()
             EventBus = c:Get("EventBus"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "EventBus", "Logger" })
 
     container:Register("Combat", function(c)
         return Combat.new({
@@ -84,14 +98,14 @@ function Bootstrap:Init()
             Logger = c:Get("Logger"),
             StateMachine = c:Get("StateMachine"),
         })
-    end)
+    end, { "Cache", "EventBus", "NetworkEngine", "EnemyState", "Logger", "StateMachine" })
 
     container:Register("Movement", function(c)
         return Movement.new({
             Cache = c:Get("Cache"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "Logger" })
 
     container:Register("Survival", function(c)
         return Survival.new({
@@ -100,7 +114,7 @@ function Bootstrap:Init()
             EventBus = c:Get("EventBus"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "StateMachine", "EventBus", "Logger" })
 
     container:Register("Skills", function(c)
         return Skills.new({
@@ -108,14 +122,14 @@ function Bootstrap:Init()
             Combat = c:Get("Combat"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "Combat", "Logger" })
 
     container:Register("World", function(c)
         return World.new({
             ConfigManager = c:Get("ConfigManager"),
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "ConfigManager", "Logger" })
 
     container:Register("Visuals", function(c)
         return Visuals.new({
@@ -123,16 +137,20 @@ function Bootstrap:Init()
             ObjectPool = ObjectPool,
             Logger = c:Get("Logger"),
         })
-    end)
+    end, { "Cache", "ObjectPool", "Logger" })
 
     -- 4. Run Diagnostics & Automated Unit Tests on Isolated Instances
     diagnostics:RunHealthCheck()
     local testsPassed, testResults = UnitTests.RunAll()
     logger:Info("Bootstrap", string.format("Automated Isolated Test Suite: %s", testsPassed and "100% PASSED" or "TESTS FAILED"))
 
-    -- 5. Instantiate Core Systems via DI
+    -- 5. Topological DAG Resolution of All Systems
+    local initOrder = container:ResolveAllInOrder()
+    logger:Info("Bootstrap", string.format("DAG Resolution Complete. Initialized %d services in topological order.", #initOrder))
+
     local network = container:Get("NetworkEngine")
     network:Init()
+    self._maid:GiveTask(function() network:Destroy() end)
 
     local combat = container:Get("Combat")
     local movement = container:Get("Movement")
@@ -235,27 +253,39 @@ function Bootstrap:Init()
 
     -- Validate all feature dependencies in DI container
     local depsOk, depReport = featureManager:ValidateDependencies(container)
-    logger:Info("Bootstrap", string.format("Dependency Graph Validation: %s", depsOk and "ALL DEPENDENCIES SATISFIED" or "DEGRADED"))
+    logger:Info("Bootstrap", string.format("Feature Dependency Graph: %s", depsOk and "ALL SATISFIED" or "DEGRADED ISOLATION ACTIVE"))
 
     featureManager:InitAll(container)
+    self._maid:GiveTask(function() featureManager:DestroyAll() end)
 
-    -- 9. Connect Game Loop Pipelines
-    RunService.RenderStepped:Connect(function(dt)
+    -- 9. Connect Game Loop Pipelines & Store Connections in Root Maid
+    local rsConn = RunService.RenderStepped:Connect(function(dt)
         featureManager:ExecutePipeline("RenderStepped", dt, container)
     end)
+    self._maid:GiveTask(rsConn)
 
-    RunService.Stepped:Connect(function()
+    local stConn = RunService.Stepped:Connect(function()
         movement:UpdateNoclip(configManager.Config)
         featureManager:ExecutePipeline("Stepped", 1/60, container)
     end)
+    self._maid:GiveTask(stConn)
 
-    RunService.Heartbeat:Connect(function(dt)
+    local hbConn = RunService.Heartbeat:Connect(function(dt)
         fsm:Update(dt, container)
         scheduler:Step(dt)
         featureManager:ExecutePipeline("Heartbeat", dt, container)
     end)
+    self._maid:GiveTask(hbConn)
 
-    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (LEVEL 6 SPECIALIST ARCHITECTURE) ===")
+    logger:Info("Bootstrap", "=== 4080 HUB FRAMEWORK FULLY OPERATIONAL (SPECIALIST PRODUCTION ARCHITECTURE) ===")
+end
+
+function Bootstrap:Destroy()
+    if self._maid then
+        self._maid:DoCleaning()
+        self._maid = nil
+    end
+    self._isInitialized = false
 end
 
 return Bootstrap
