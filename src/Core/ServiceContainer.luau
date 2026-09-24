@@ -6,18 +6,20 @@ function ServiceContainer.new()
     local self = setmetatable({
         _services = {},
         _factories = {},
+        _dependencies = {}, -- Adjacency list for real DAG
         _resolving = {},
     }, ServiceContainer)
     return self
 end
 
-function ServiceContainer:Register(name: string, instanceOrFactory: any)
+function ServiceContainer:Register(name: string, instanceOrFactory: any, dependencies: { string }?)
     assert(name and instanceOrFactory, "ServiceContainer:Register requires name and instance/factory")
     if type(instanceOrFactory) == "function" then
         self._factories[name] = instanceOrFactory
     else
         self._services[name] = instanceOrFactory
     end
+    self._dependencies[name] = dependencies or {}
     return instanceOrFactory
 end
 
@@ -48,12 +50,49 @@ function ServiceContainer:Has(name: string): boolean
     return self._services[name] ~= nil or self._factories[name] ~= nil
 end
 
-function ServiceContainer:BuildGraph(): { string }
+function ServiceContainer:BuildGraph(): { [string]: { string } }
+    -- Real Directed Dependency Graph (Adjacency List)
     local graph = {}
-    for name, _ in pairs(self._services) do table.insert(graph, name) end
-    for name, _ in pairs(self._factories) do table.insert(graph, name) end
-    table.sort(graph)
+    for name, deps in pairs(self._dependencies) do
+        graph[name] = deps
+    end
     return graph
+end
+
+function ServiceContainer:TopologicalSort(): ({ string }, boolean)
+    local visited = {}
+    local recStack = {}
+    local order = {}
+    local hasCycle = false
+
+    local function dfs(node: string)
+        if recStack[node] then
+            hasCycle = true
+            return
+        end
+        if visited[node] then return end
+
+        visited[node] = true
+        recStack[node] = true
+
+        local deps = self._dependencies[node] or {}
+        for _, dep in ipairs(deps) do
+            if self:Has(dep) then
+                dfs(dep)
+            end
+        end
+
+        recStack[node] = false
+        table.insert(order, node)
+    end
+
+    for name, _ in pairs(self._dependencies) do
+        if not visited[name] then
+            dfs(name)
+        end
+    end
+
+    return order, not hasCycle
 end
 
 return ServiceContainer

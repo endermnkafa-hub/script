@@ -2,6 +2,16 @@
 local CacheEngine = {}
 CacheEngine.__index = CacheEngine
 
+local function GetInstanceHash(inst: Instance): string
+    -- Safe standard-compliant instance hashing without relying on undocumented methods
+    local ok, debugId = pcall(function() return (inst :: any):GetDebugId() end)
+    if ok and debugId and debugId ~= "" then
+        return debugId
+    end
+    -- Fallback combining ClassName, Name, and memory representation string
+    return string.format("%s_%s_%s", inst.ClassName, inst.Name, tostring(inst))
+end
+
 function CacheEngine.new(baseTTL: number?)
     local self = setmetatable({
         PlayerCache = {},
@@ -55,15 +65,17 @@ function CacheEngine:GetPlayerEntry(player: Player): any
 end
 
 function CacheEngine:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { Instance }?): boolean
-    -- Correct Filter-Aware Hash Key to prevent cache collision across different filter targets
-    local filterHash = 0
-    if filterList then
+    -- Generate safe and collision-free filter hash
+    local filterStr = ""
+    if filterList and #filterList > 0 then
+        local parts = {}
         for _, inst in ipairs(filterList) do
-            filterHash += (inst:GetHashCode and inst:GetHashCode() or 1)
+            table.insert(parts, GetInstanceHash(inst))
         end
+        filterStr = table.concat(parts, "|")
     end
 
-    local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_%d", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterHash)
+    local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_[%s]", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterStr)
     local cached = self.RaycastCache[hash]
     local now = os.clock()
 

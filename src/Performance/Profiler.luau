@@ -25,6 +25,7 @@ function Profiler:Begin(tag: string, budgetMs: number?): number?
             MaxTime = 0,
             LastTime = 0,
             AvgMicroseconds = 0,
+            EmaMicroseconds = 0, -- Exponential Moving Average (Rolling Recent Window)
             Budget = (budgetMs or 2.0) * 1000, -- microseconds
             Status = "OK",
         }
@@ -44,8 +45,11 @@ function Profiler:End(tag: string, startTime: number?)
         if duration > metric.MaxTime then metric.MaxTime = duration end
         metric.AvgMicroseconds = metric.TotalTime / metric.Calls
 
-        -- Active Budget Assessment
-        if metric.AvgMicroseconds > metric.Budget then
+        -- Real-Time Rolling EMA Calculation (Alpha = 0.20 for fast response to recent frame spikes)
+        metric.EmaMicroseconds = (metric.EmaMicroseconds == 0) and duration or (metric.EmaMicroseconds * 0.80 + duration * 0.20)
+
+        -- Real-Time Budget Assessment based on recent Rolling Window
+        if metric.EmaMicroseconds > metric.Budget then
             metric.Status = "OVER_BUDGET"
         else
             metric.Status = "OK"

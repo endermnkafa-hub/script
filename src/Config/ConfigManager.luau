@@ -14,12 +14,8 @@ function ConfigManager.new(logger: any)
         _degradedMode = false,
     }, ConfigManager)
 
-    for catName, catSchema in pairs(ConfigSchema) do
-        self.Config[catName] = {}
-        for key, spec in pairs(catSchema) do
-            self.Config[catName][key] = spec.Default
-        end
-    end
+    -- Initialize with validated defaults from Schema
+    self:ResetToDefaults()
 
     if typeof(writefile) ~= "function" or typeof(readfile) ~= "function" then
         self._degradedMode = true
@@ -29,6 +25,53 @@ function ConfigManager.new(logger: any)
     end
 
     return self
+end
+
+function ConfigManager:ResetToDefaults()
+    for catName, catSchema in pairs(ConfigSchema) do
+        self.Config[catName] = {}
+        for key, spec in pairs(catSchema) do
+            self.Config[catName][key] = spec.Default
+        end
+    end
+end
+
+function ConfigManager:ValidateAndClamp(data: any): any
+    -- Strict Runtime Schema Enforcement: Validates types, clamps Min/Max bounds, rejects out-of-range corrupt values!
+    for catName, catSchema in pairs(ConfigSchema) do
+        if type(data[catName]) == "table" then
+            for key, spec in pairs(catSchema) do
+                local val = data[catName][key]
+                if val ~= nil then
+                    if spec.Type == "number" then
+                        if type(val) == "number" then
+                            if spec.Min and spec.Max then
+                                data[catName][key] = math.clamp(val, spec.Min, spec.Max)
+                            end
+                        else
+                            data[catName][key] = spec.Default
+                        end
+                    elseif spec.Type == "boolean" then
+                        if type(val) ~= "boolean" then
+                            data[catName][key] = spec.Default
+                        end
+                    elseif spec.Type == "string" then
+                        if type(val) ~= "string" then
+                            data[catName][key] = spec.Default
+                        end
+                    end
+                else
+                    data[catName][key] = spec.Default
+                end
+            end
+        else
+            data[catName] = {}
+            for key, spec in pairs(catSchema) do
+                data[catName][key] = spec.Default
+            end
+        end
+    end
+    return data
 end
 
 local function SerializeValue(val: any): any
@@ -68,20 +111,13 @@ local function DeserializeValue(val: any): any
     end
 end
 
-local function DeepMerge(target: any, source: any)
-    for k, v in pairs(source) do
-        if type(v) == "table" and type(target[k]) == "table" and not v.__type then
-            DeepMerge(target[k], v)
-        else
-            target[k] = v
-        end
-    end
-end
-
 function ConfigManager:Save(): (boolean, string?)
     if self._degradedMode then
         return true, "In-Memory"
     end
+    -- Validate & clamp before saving
+    self:ValidateAndClamp(self.Config)
+
     local ok, err = pcall(function()
         local dataToSave = {}
         for cat, val in pairs(self.Config) do
@@ -90,7 +126,7 @@ function ConfigManager:Save(): (boolean, string?)
         local json = HttpService:JSONEncode(dataToSave)
         writefile(self.FileName, json)
     end)
-    if ok and self._logger then self._logger:Info("Config", "Saved config to disk.") end
+    if ok and self._logger then self._logger:Info("Config", "Saved validated config to disk.") end
     return ok, err
 end
 
@@ -102,10 +138,12 @@ function ConfigManager:Load(): (boolean, string?)
         local raw = readfile(self.FileName)
         local rawData = HttpService:JSONDecode(raw)
         local decoded = DeserializeValue(rawData)
-        DeepMerge(self.Config, decoded)
+        -- Enforce strict schema validation and min/max clamping on loaded data
+        self:ValidateAndClamp(decoded)
+        self.Config = decoded
         self:RefreshUI()
     end)
-    if ok and self._logger then self._logger:Info("Config", "Loaded config from disk.") end
+    if ok and self._logger then self._logger:Info("Config", "Loaded and validated config from disk.") end
     return ok, err
 end
 
@@ -124,6 +162,7 @@ function ConfigManager:Reset()
     if typeof(delfile) == "function" and isfile(self.FileName) then
         pcall(function() delfile(self.FileName) end)
     end
+    self:ResetToDefaults()
     self:RefreshUI()
 end
 

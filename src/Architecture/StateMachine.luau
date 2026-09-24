@@ -11,9 +11,8 @@ export type StateDefinition = {
 }
 
 export type TransitionRule = {
-    From: string | { string },
+    From: string,
     To: string,
-    Priority: number?,
     Condition: ((ctx: any) -> boolean)?,
 }
 
@@ -30,7 +29,7 @@ function StateMachine.new(initialState: string?, logger: any?)
         StateChanged = Signal.new(),
         _logger = logger,
         _states = {},
-        _transitions = {},
+        _transitions = {}, -- Whitelist Transition Graph
         _priorities = {
             EMERGENCY_STOP = 100,
             SKY_ESCAPE     = 90,
@@ -42,6 +41,9 @@ function StateMachine.new(initialState: string?, logger: any?)
             IDLE           = 0,
         },
     }, StateMachine)
+
+    -- Register Default Whitelist Transitions Graph
+    self:RegisterDefaultTransitions()
     return self
 end
 
@@ -64,12 +66,71 @@ function StateMachine:RegisterTransition(fromState: string | { string }, toState
     end
 end
 
+function StateMachine:RegisterDefaultTransitions()
+    -- Explicit Strict Whitelist Transitions Graph
+    local standardCombatStates = { "IDLE", "COMBAT", "BEHIND_TP" }
+
+    -- Transitions from IDLE
+    self:RegisterTransition("IDLE", "COMBAT")
+    self:RegisterTransition("IDLE", "BEHIND_TP")
+    self:RegisterTransition("IDLE", "MASS_BRING")
+    self:RegisterTransition("IDLE", "VOID_KILL")
+    self:RegisterTransition("IDLE", "SKY_DODGE")
+    self:RegisterTransition("IDLE", "SKY_ESCAPE")
+    self:RegisterTransition("IDLE", "EMERGENCY_STOP")
+
+    -- Transitions from COMBAT
+    self:RegisterTransition("COMBAT", "IDLE")
+    self:RegisterTransition("COMBAT", "BEHIND_TP")
+    self:RegisterTransition("COMBAT", "MASS_BRING")
+    self:RegisterTransition("COMBAT", "VOID_KILL")
+    self:RegisterTransition("COMBAT", "SKY_DODGE")
+    self:RegisterTransition("COMBAT", "SKY_ESCAPE")
+    self:RegisterTransition("COMBAT", "EMERGENCY_STOP")
+
+    -- Transitions from BEHIND_TP
+    self:RegisterTransition("BEHIND_TP", "IDLE")
+    self:RegisterTransition("BEHIND_TP", "COMBAT")
+    self:RegisterTransition("BEHIND_TP", "SKY_DODGE")
+    self:RegisterTransition("BEHIND_TP", "SKY_ESCAPE")
+    self:RegisterTransition("BEHIND_TP", "EMERGENCY_STOP")
+
+    -- Transitions from High-Priority Defense / Special states
+    self:RegisterTransition("MASS_BRING", "IDLE")
+    self:RegisterTransition("MASS_BRING", "COMBAT")
+    self:RegisterTransition("MASS_BRING", "EMERGENCY_STOP")
+
+    self:RegisterTransition("VOID_KILL", "IDLE")
+    self:RegisterTransition("VOID_KILL", "EMERGENCY_STOP")
+
+    self:RegisterTransition("SKY_DODGE", "IDLE")
+    self:RegisterTransition("SKY_DODGE", "COMBAT")
+    self:RegisterTransition("SKY_DODGE", "EMERGENCY_STOP")
+
+    self:RegisterTransition("SKY_ESCAPE", "IDLE")
+    self:RegisterTransition("SKY_ESCAPE", "EMERGENCY_STOP")
+
+    self:RegisterTransition("EMERGENCY_STOP", "IDLE")
+end
+
 function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     if self.CurrentState == targetState then return false end
 
     -- Emergency stop can always interrupt everything
     if targetState == "EMERGENCY_STOP" then return true end
     if self.CurrentState == "EMERGENCY_STOP" and targetState ~= "IDLE" then return false end
+
+    -- Strict Whitelist Guard: Only registered transitions are allowed!
+    local transKey = self.CurrentState .. "->" .. targetState
+    local transRule = self._transitions[transKey]
+    if not transRule then
+        -- Unregistered transition rejected by strict whitelist
+        return false
+    end
+
+    if transRule.Condition and not transRule.Condition(ctx) then
+        return false
+    end
 
     local currentDef = self._states[self.CurrentState]
     if currentDef and currentDef.CanExit and not currentDef:CanExit(ctx) then
@@ -79,18 +140,9 @@ function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     local currentPri = self._priorities[self.CurrentState] or 0
     local targetPri = self._priorities[targetState] or 0
 
-    -- Strict Priority Enforcement: Higher priority states naturally block lower priority overrides
+    -- Strict Priority Enforcement: Higher priority blocks lower priority override
     if targetPri < currentPri and currentPri >= 70 then
         return false
-    end
-
-    -- Explicit Transition Rule Check (if defined)
-    local transKey = self.CurrentState .. "->" .. targetState
-    local transRule = self._transitions[transKey]
-    if transRule and transRule.Condition then
-        if not transRule.Condition(ctx) then
-            return false
-        end
     end
 
     local targetDef = self._states[targetState]

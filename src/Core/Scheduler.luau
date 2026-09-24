@@ -13,10 +13,10 @@ export type TaskDefinition = {
 function Scheduler.new()
     local self = setmetatable({
         _intervals = {
-            Fast       = 0,      -- Frame-rate bound (0.016s)
-            Normal     = 0.05,   -- 20 Hz (Combat scan & State)
-            Slow       = 0.5,    -- 2 Hz (Telemetry & Hop check)
-            Background = 2.0,    -- 0.5 Hz (Autosave & Cache cleanup)
+            Fast       = 1 / 60, -- Exact 60 Hz interval (~0.0166s)
+            Normal     = 0.05,   -- 20 Hz
+            Slow       = 0.5,    -- 2 Hz
+            Background = 2.0,    -- 0.5 Hz
         },
         _tasks = {},
     }, Scheduler)

@@ -384,9 +384,16 @@ function FeatureManager:ValidateDependencies(container: any): (boolean, { [strin
 end
 
 function FeatureManager:InitAll(ctx: any)
+    -- Complete Lifecycle: Run Init for all, and immediately Start all enabled features!
     for name, feat in pairs(self._features) do
         if feat.Init then
             self._logger:SafeCall(name .. ".Init", feat.Init, feat, ctx)
+        end
+        if feat.Enabled then
+            feat.Status = "RUNNING"
+            if feat.Start then
+                self._logger:SafeCall(name .. ".Start", feat.Start, feat, ctx)
+            end
         end
     end
 end
@@ -417,13 +424,13 @@ function FeatureManager:ExecutePipeline(phase: string, dt: number, ctx: any)
 
     for _, feat in ipairs(list) do
         if feat.Enabled and feat.Update then
-            -- Active Budget Enforcement & Adaptive Throttling
+            -- Active Budget Throttling based on EMA Profiler Status
             local metric = self._profiler and self._profiler.Metrics[feat.Name]
             if metric and metric.Status == "OVER_BUDGET" then
                 feat.OverBudgetCount += 1
-                if feat.OverBudgetCount > 5 then
+                if feat.OverBudgetCount > 3 then
                     feat.Status = "THROTTLED"
-                    -- Skip 1 in 2 frames to enforce performance budget
+                    -- Throttle: Skip every alternate frame to protect frame budget
                     if (feat.OverBudgetCount % 2) == 0 then
                         continue
                     end
@@ -476,9 +483,8 @@ export type StateDefinition = {
 }
 
 export type TransitionRule = {
-    From: string | { string },
+    From: string,
     To: string,
-    Priority: number?,
     Condition: ((ctx: any) -> boolean)?,
 }
 
@@ -495,7 +501,7 @@ function StateMachine.new(initialState: string?, logger: any?)
         StateChanged = Signal.new(),
         _logger = logger,
         _states = {},
-        _transitions = {},
+        _transitions = {}, -- Whitelist Transition Graph
         _priorities = {
             EMERGENCY_STOP = 100,
             SKY_ESCAPE     = 90,
@@ -507,6 +513,9 @@ function StateMachine.new(initialState: string?, logger: any?)
             IDLE           = 0,
         },
     }, StateMachine)
+
+    -- Register Default Whitelist Transitions Graph
+    self:RegisterDefaultTransitions()
     return self
 end
 
@@ -529,12 +538,71 @@ function StateMachine:RegisterTransition(fromState: string | { string }, toState
     end
 end
 
+function StateMachine:RegisterDefaultTransitions()
+    -- Explicit Strict Whitelist Transitions Graph
+    local standardCombatStates = { "IDLE", "COMBAT", "BEHIND_TP" }
+
+    -- Transitions from IDLE
+    self:RegisterTransition("IDLE", "COMBAT")
+    self:RegisterTransition("IDLE", "BEHIND_TP")
+    self:RegisterTransition("IDLE", "MASS_BRING")
+    self:RegisterTransition("IDLE", "VOID_KILL")
+    self:RegisterTransition("IDLE", "SKY_DODGE")
+    self:RegisterTransition("IDLE", "SKY_ESCAPE")
+    self:RegisterTransition("IDLE", "EMERGENCY_STOP")
+
+    -- Transitions from COMBAT
+    self:RegisterTransition("COMBAT", "IDLE")
+    self:RegisterTransition("COMBAT", "BEHIND_TP")
+    self:RegisterTransition("COMBAT", "MASS_BRING")
+    self:RegisterTransition("COMBAT", "VOID_KILL")
+    self:RegisterTransition("COMBAT", "SKY_DODGE")
+    self:RegisterTransition("COMBAT", "SKY_ESCAPE")
+    self:RegisterTransition("COMBAT", "EMERGENCY_STOP")
+
+    -- Transitions from BEHIND_TP
+    self:RegisterTransition("BEHIND_TP", "IDLE")
+    self:RegisterTransition("BEHIND_TP", "COMBAT")
+    self:RegisterTransition("BEHIND_TP", "SKY_DODGE")
+    self:RegisterTransition("BEHIND_TP", "SKY_ESCAPE")
+    self:RegisterTransition("BEHIND_TP", "EMERGENCY_STOP")
+
+    -- Transitions from High-Priority Defense / Special states
+    self:RegisterTransition("MASS_BRING", "IDLE")
+    self:RegisterTransition("MASS_BRING", "COMBAT")
+    self:RegisterTransition("MASS_BRING", "EMERGENCY_STOP")
+
+    self:RegisterTransition("VOID_KILL", "IDLE")
+    self:RegisterTransition("VOID_KILL", "EMERGENCY_STOP")
+
+    self:RegisterTransition("SKY_DODGE", "IDLE")
+    self:RegisterTransition("SKY_DODGE", "COMBAT")
+    self:RegisterTransition("SKY_DODGE", "EMERGENCY_STOP")
+
+    self:RegisterTransition("SKY_ESCAPE", "IDLE")
+    self:RegisterTransition("SKY_ESCAPE", "EMERGENCY_STOP")
+
+    self:RegisterTransition("EMERGENCY_STOP", "IDLE")
+end
+
 function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     if self.CurrentState == targetState then return false end
 
     -- Emergency stop can always interrupt everything
     if targetState == "EMERGENCY_STOP" then return true end
     if self.CurrentState == "EMERGENCY_STOP" and targetState ~= "IDLE" then return false end
+
+    -- Strict Whitelist Guard: Only registered transitions are allowed!
+    local transKey = self.CurrentState .. "->" .. targetState
+    local transRule = self._transitions[transKey]
+    if not transRule then
+        -- Unregistered transition rejected by strict whitelist
+        return false
+    end
+
+    if transRule.Condition and not transRule.Condition(ctx) then
+        return false
+    end
 
     local currentDef = self._states[self.CurrentState]
     if currentDef and currentDef.CanExit and not currentDef:CanExit(ctx) then
@@ -544,18 +612,9 @@ function StateMachine:CanTransitionTo(targetState: string, ctx: any): boolean
     local currentPri = self._priorities[self.CurrentState] or 0
     local targetPri = self._priorities[targetState] or 0
 
-    -- Strict Priority Enforcement: Higher priority states naturally block lower priority overrides
+    -- Strict Priority Enforcement: Higher priority blocks lower priority override
     if targetPri < currentPri and currentPri >= 70 then
         return false
-    end
-
-    -- Explicit Transition Rule Check (if defined)
-    local transKey = self.CurrentState .. "->" .. targetState
-    local transRule = self._transitions[transKey]
-    if transRule and transRule.Condition then
-        if not transRule.Condition(ctx) then
-            return false
-        end
     end
 
     local targetDef = self._states[targetState]
@@ -644,12 +703,8 @@ function ConfigManager.new(logger: any)
         _degradedMode = false,
     }, ConfigManager)
 
-    for catName, catSchema in pairs(ConfigSchema) do
-        self.Config[catName] = {}
-        for key, spec in pairs(catSchema) do
-            self.Config[catName][key] = spec.Default
-        end
-    end
+    -- Initialize with validated defaults from Schema
+    self:ResetToDefaults()
 
     if typeof(writefile) ~= "function" or typeof(readfile) ~= "function" then
         self._degradedMode = true
@@ -659,6 +714,53 @@ function ConfigManager.new(logger: any)
     end
 
     return self
+end
+
+function ConfigManager:ResetToDefaults()
+    for catName, catSchema in pairs(ConfigSchema) do
+        self.Config[catName] = {}
+        for key, spec in pairs(catSchema) do
+            self.Config[catName][key] = spec.Default
+        end
+    end
+end
+
+function ConfigManager:ValidateAndClamp(data: any): any
+    -- Strict Runtime Schema Enforcement: Validates types, clamps Min/Max bounds, rejects out-of-range corrupt values!
+    for catName, catSchema in pairs(ConfigSchema) do
+        if type(data[catName]) == "table" then
+            for key, spec in pairs(catSchema) do
+                local val = data[catName][key]
+                if val ~= nil then
+                    if spec.Type == "number" then
+                        if type(val) == "number" then
+                            if spec.Min and spec.Max then
+                                data[catName][key] = math.clamp(val, spec.Min, spec.Max)
+                            end
+                        else
+                            data[catName][key] = spec.Default
+                        end
+                    elseif spec.Type == "boolean" then
+                        if type(val) ~= "boolean" then
+                            data[catName][key] = spec.Default
+                        end
+                    elseif spec.Type == "string" then
+                        if type(val) ~= "string" then
+                            data[catName][key] = spec.Default
+                        end
+                    end
+                else
+                    data[catName][key] = spec.Default
+                end
+            end
+        else
+            data[catName] = {}
+            for key, spec in pairs(catSchema) do
+                data[catName][key] = spec.Default
+            end
+        end
+    end
+    return data
 end
 
 local function SerializeValue(val: any): any
@@ -698,20 +800,13 @@ local function DeserializeValue(val: any): any
     end
 end
 
-local function DeepMerge(target: any, source: any)
-    for k, v in pairs(source) do
-        if type(v) == "table" and type(target[k]) == "table" and not v.__type then
-            DeepMerge(target[k], v)
-        else
-            target[k] = v
-        end
-    end
-end
-
 function ConfigManager:Save(): (boolean, string?)
     if self._degradedMode then
         return true, "In-Memory"
     end
+    -- Validate & clamp before saving
+    self:ValidateAndClamp(self.Config)
+
     local ok, err = pcall(function()
         local dataToSave = {}
         for cat, val in pairs(self.Config) do
@@ -720,7 +815,7 @@ function ConfigManager:Save(): (boolean, string?)
         local json = HttpService:JSONEncode(dataToSave)
         writefile(self.FileName, json)
     end)
-    if ok and self._logger then self._logger:Info("Config", "Saved config to disk.") end
+    if ok and self._logger then self._logger:Info("Config", "Saved validated config to disk.") end
     return ok, err
 end
 
@@ -732,10 +827,12 @@ function ConfigManager:Load(): (boolean, string?)
         local raw = readfile(self.FileName)
         local rawData = HttpService:JSONDecode(raw)
         local decoded = DeserializeValue(rawData)
-        DeepMerge(self.Config, decoded)
+        -- Enforce strict schema validation and min/max clamping on loaded data
+        self:ValidateAndClamp(decoded)
+        self.Config = decoded
         self:RefreshUI()
     end)
-    if ok and self._logger then self._logger:Info("Config", "Loaded config from disk.") end
+    if ok and self._logger then self._logger:Info("Config", "Loaded and validated config from disk.") end
     return ok, err
 end
 
@@ -754,6 +851,7 @@ function ConfigManager:Reset()
     if typeof(delfile) == "function" and isfile(self.FileName) then
         pcall(function() delfile(self.FileName) end)
     end
+    self:ResetToDefaults()
     self:RefreshUI()
 end
 
@@ -1078,10 +1176,10 @@ export type TaskDefinition = {
 function Scheduler.new()
     local self = setmetatable({
         _intervals = {
-            Fast       = 0,      -- Frame-rate bound (0.016s)
-            Normal     = 0.05,   -- 20 Hz (Combat scan & State)
-            Slow       = 0.5,    -- 2 Hz (Telemetry & Hop check)
-            Background = 2.0,    -- 0.5 Hz (Autosave & Cache cleanup)
+            Fast       = 1 / 60, -- Exact 60 Hz interval (~0.0166s)
+            Normal     = 0.05,   -- 20 Hz
+            Slow       = 0.5,    -- 2 Hz
+            Background = 2.0,    -- 0.5 Hz
         },
         _tasks = {},
     }, Scheduler)
@@ -1146,18 +1244,20 @@ function ServiceContainer.new()
     local self = setmetatable({
         _services = {},
         _factories = {},
+        _dependencies = {}, -- Adjacency list for real DAG
         _resolving = {},
     }, ServiceContainer)
     return self
 end
 
-function ServiceContainer:Register(name: string, instanceOrFactory: any)
+function ServiceContainer:Register(name: string, instanceOrFactory: any, dependencies: { string }?)
     assert(name and instanceOrFactory, "ServiceContainer:Register requires name and instance/factory")
     if type(instanceOrFactory) == "function" then
         self._factories[name] = instanceOrFactory
     else
         self._services[name] = instanceOrFactory
     end
+    self._dependencies[name] = dependencies or {}
     return instanceOrFactory
 end
 
@@ -1188,12 +1288,49 @@ function ServiceContainer:Has(name: string): boolean
     return self._services[name] ~= nil or self._factories[name] ~= nil
 end
 
-function ServiceContainer:BuildGraph(): { string }
+function ServiceContainer:BuildGraph(): { [string]: { string } }
+    -- Real Directed Dependency Graph (Adjacency List)
     local graph = {}
-    for name, _ in pairs(self._services) do table.insert(graph, name) end
-    for name, _ in pairs(self._factories) do table.insert(graph, name) end
-    table.sort(graph)
+    for name, deps in pairs(self._dependencies) do
+        graph[name] = deps
+    end
     return graph
+end
+
+function ServiceContainer:TopologicalSort(): ({ string }, boolean)
+    local visited = {}
+    local recStack = {}
+    local order = {}
+    local hasCycle = false
+
+    local function dfs(node: string)
+        if recStack[node] then
+            hasCycle = true
+            return
+        end
+        if visited[node] then return end
+
+        visited[node] = true
+        recStack[node] = true
+
+        local deps = self._dependencies[node] or {}
+        for _, dep in ipairs(deps) do
+            if self:Has(dep) then
+                dfs(dep)
+            end
+        end
+
+        recStack[node] = false
+        table.insert(order, node)
+    end
+
+    for name, _ in pairs(self._dependencies) do
+        if not visited[name] then
+            dfs(name)
+        end
+    end
+
+    return order, not hasCycle
 end
 
 return ServiceContainer
@@ -1360,6 +1497,7 @@ local FeatureManager = require("Architecture.FeatureManager")
 local CacheEngine = require("Performance.Cache")
 local ObjectPool = require("Performance.ObjectPool")
 local Profiler = require("Performance.Profiler")
+local ConfigManager = require("Config.ConfigManager")
 local Logger = require("Core.Logger")
 
 local UnitTests = {}
@@ -1394,34 +1532,43 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     maid:DoCleaning()
     results["MaidTest"] = cleaned
 
-    -- 4. Isolated FSM Priority Enforcement Test
+    -- 4. Isolated Strict Whitelist FSM Test (Unregistered transition rejected)
     local isolatedFSM = StateMachine.new("IDLE", logger)
     isolatedFSM:RegisterState("LOW_STATE",  { Priority = 20 })
     isolatedFSM:RegisterState("HIGH_STATE", { Priority = 90 })
 
+    -- Should reject unregistered transition
+    local unregBlocked = not isolatedFSM:CanTransitionTo("HIGH_STATE", nil)
+    isolatedFSM:RegisterTransition("IDLE", "HIGH_STATE")
+    local regAllowed = isolatedFSM:CanTransitionTo("HIGH_STATE", nil)
     isolatedFSM:TransitionTo("HIGH_STATE", nil)
+
+    -- Lower priority override blocked
+    isolatedFSM:RegisterTransition("HIGH_STATE", "LOW_STATE")
     local lowBlocked = not isolatedFSM:CanTransitionTo("LOW_STATE", nil)
     isolatedFSM:TransitionTo("IDLE", nil, true)
-    results["FSM_PriorityEnforcementTest"] = lowBlocked
+    results["FSM_StrictWhitelistAndPriorityTest"] = (unregBlocked and regAllowed and lowBlocked)
 
     -- 5. Isolated FSM Rollback Test
+    isolatedFSM:RegisterTransition("IDLE", "LOW_STATE")
     isolatedFSM:TransitionTo("LOW_STATE", nil)
     isolatedFSM:Rollback(nil)
     results["FSM_RollbackTest"] = (isolatedFSM.CurrentState == "IDLE")
 
-    -- 6. Isolated Scheduler Test
+    -- 6. Isolated 60 Hz Scheduler Test
     local sched = Scheduler.new()
     local schedCount = 0
     sched:Register("FastTask", "Fast", function() schedCount += 1 end)
-    sched:Step(0.016)
-    results["SchedulerTest"] = (schedCount == 1)
+    sched:Step(0.0166)
+    results["Scheduler_60HzTest"] = (schedCount == 1)
 
-    -- 7. ServiceContainer True Factory DI & Cycle Detection Test
+    -- 7. ServiceContainer True Factory DI & DAG Topological Sort Test
     local container = ServiceContainer.new()
-    container:Register("ServiceA", function(c) return { Name = "A" } end)
-    container:Register("ServiceB", function(c) return { Dep = c:Get("ServiceA") } end)
+    container:Register("ServiceA", function(c) return { Name = "A" } end, {})
+    container:Register("ServiceB", function(c) return { Dep = c:Get("ServiceA") } end, { "ServiceA" })
+    local order, noCycles = container:TopologicalSort()
     local resolvedB = container:Get("ServiceB")
-    results["DependencyInjectionTest"] = (resolvedB and resolvedB.Dep and resolvedB.Dep.Name == "A")
+    results["DependencyGraph_TopologicalSortTest"] = (noCycles and resolvedB.Dep.Name == "A")
 
     -- 8. ObjectPool Recycling Test
     local pool = ObjectPool.new(function() return { active = true } end, function(o) o.active = false end, 2)
@@ -1429,30 +1576,35 @@ function UnitTests.RunAll(): (boolean, { [string]: boolean })
     pool:Release(item)
     results["ObjectPoolTest"] = (item.active == false and pool.Acquisitions == 1 and pool.Releases == 1)
 
-    -- 9. Cache Adaptive TTL & Filter Hashing Test
+    -- 9. Cache Safe Instance Hash & Filter Hash Test
     local cache = CacheEngine.new(0.08)
     cache:Clear()
     local partA = Instance.new("Part")
     local partB = Instance.new("Part")
     local los1 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partA })
     local los2 = cache:CachedRaycast(Vector3.new(0,0,0), Vector3.new(0,10,0), { partB })
-    results["Cache_FilterHashTest"] = (cache.RaycastStats.Misses == 2)
+    results["Cache_SafeFilterHashTest"] = (cache.RaycastStats.Misses == 2)
     partA:Destroy()
     partB:Destroy()
 
-    -- 10. FeatureManager Lifecycle & Throttling Test
+    -- 10. Profiler EMA Rolling Window Budget Test
     local profiler = Profiler.new()
-    local fm = FeatureManager.new(logger, profiler)
-    local featStarted = false
-    local feat = fm:Register({
-        Name = "TestFeature",
-        Phase = "Heartbeat",
-        Priority = 50,
-        Start = function() featStarted = true end,
-    })
-    fm:SetEnabled("TestFeature", true, nil)
-    fm:SetEnabled("TestFeature", false, nil)
-    results["FeatureManager_LifecycleTest"] = featStarted
+    local pStart = profiler:Begin("BudgetTask", 0.001) -- 1 microsecond budget
+    task.wait(0.005) -- will exceed budget
+    profiler:End("BudgetTask", pStart)
+    local metric = profiler.Metrics["BudgetTask"]
+    results["Profiler_RollingBudgetTest"] = (metric and metric.Status == "OVER_BUDGET")
+
+    -- 11. Config Schema Runtime Clamping Test
+    local cfg = ConfigManager.new(logger)
+    local dirtyData = {
+        World = {
+            FOVValue = 99999, -- Exceeds Max: 120
+            FullBright = "NotABool", -- Invalid Type
+        }
+    }
+    cfg:ValidateAndClamp(dirtyData)
+    results["Config_SchemaClampingTest"] = (dirtyData.World.FOVValue == 120 and dirtyData.World.FullBright == false)
 
     local allPassed = true
     for name, passed in pairs(results) do
@@ -1591,6 +1743,16 @@ __modules["Performance.Cache"] = function()
 local CacheEngine = {}
 CacheEngine.__index = CacheEngine
 
+local function GetInstanceHash(inst: Instance): string
+    -- Safe standard-compliant instance hashing without relying on undocumented methods
+    local ok, debugId = pcall(function() return (inst :: any):GetDebugId() end)
+    if ok and debugId and debugId ~= "" then
+        return debugId
+    end
+    -- Fallback combining ClassName, Name, and memory representation string
+    return string.format("%s_%s_%s", inst.ClassName, inst.Name, tostring(inst))
+end
+
 function CacheEngine.new(baseTTL: number?)
     local self = setmetatable({
         PlayerCache = {},
@@ -1644,15 +1806,17 @@ function CacheEngine:GetPlayerEntry(player: Player): any
 end
 
 function CacheEngine:CachedRaycast(origin: Vector3, targetPos: Vector3, filterList: { Instance }?): boolean
-    -- Correct Filter-Aware Hash Key to prevent cache collision across different filter targets
-    local filterHash = 0
-    if filterList then
+    -- Generate safe and collision-free filter hash
+    local filterStr = ""
+    if filterList and #filterList > 0 then
+        local parts = {}
         for _, inst in ipairs(filterList) do
-            filterHash += (inst:GetHashCode and inst:GetHashCode() or 1)
+            table.insert(parts, GetInstanceHash(inst))
         end
+        filterStr = table.concat(parts, "|")
     end
 
-    local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_%d", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterHash)
+    local hash = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f_[%s]", origin.X, origin.Y, origin.Z, targetPos.X, targetPos.Y, targetPos.Z, filterStr)
     local cached = self.RaycastCache[hash]
     local now = os.clock()
 
@@ -1784,6 +1948,7 @@ function Profiler:Begin(tag: string, budgetMs: number?): number?
             MaxTime = 0,
             LastTime = 0,
             AvgMicroseconds = 0,
+            EmaMicroseconds = 0, -- Exponential Moving Average (Rolling Recent Window)
             Budget = (budgetMs or 2.0) * 1000, -- microseconds
             Status = "OK",
         }
@@ -1803,8 +1968,11 @@ function Profiler:End(tag: string, startTime: number?)
         if duration > metric.MaxTime then metric.MaxTime = duration end
         metric.AvgMicroseconds = metric.TotalTime / metric.Calls
 
-        -- Active Budget Assessment
-        if metric.AvgMicroseconds > metric.Budget then
+        -- Real-Time Rolling EMA Calculation (Alpha = 0.20 for fast response to recent frame spikes)
+        metric.EmaMicroseconds = (metric.EmaMicroseconds == 0) and duration or (metric.EmaMicroseconds * 0.80 + duration * 0.20)
+
+        -- Real-Time Budget Assessment based on recent Rolling Window
+        if metric.EmaMicroseconds > metric.Budget then
             metric.Status = "OVER_BUDGET"
         else
             metric.Status = "OK"

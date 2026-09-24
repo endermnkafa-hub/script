@@ -81,9 +81,16 @@ function FeatureManager:ValidateDependencies(container: any): (boolean, { [strin
 end
 
 function FeatureManager:InitAll(ctx: any)
+    -- Complete Lifecycle: Run Init for all, and immediately Start all enabled features!
     for name, feat in pairs(self._features) do
         if feat.Init then
             self._logger:SafeCall(name .. ".Init", feat.Init, feat, ctx)
+        end
+        if feat.Enabled then
+            feat.Status = "RUNNING"
+            if feat.Start then
+                self._logger:SafeCall(name .. ".Start", feat.Start, feat, ctx)
+            end
         end
     end
 end
@@ -114,13 +121,13 @@ function FeatureManager:ExecutePipeline(phase: string, dt: number, ctx: any)
 
     for _, feat in ipairs(list) do
         if feat.Enabled and feat.Update then
-            -- Active Budget Enforcement & Adaptive Throttling
+            -- Active Budget Throttling based on EMA Profiler Status
             local metric = self._profiler and self._profiler.Metrics[feat.Name]
             if metric and metric.Status == "OVER_BUDGET" then
                 feat.OverBudgetCount += 1
-                if feat.OverBudgetCount > 5 then
+                if feat.OverBudgetCount > 3 then
                     feat.Status = "THROTTLED"
-                    -- Skip 1 in 2 frames to enforce performance budget
+                    -- Throttle: Skip every alternate frame to protect frame budget
                     if (feat.OverBudgetCount % 2) == 0 then
                         continue
                     end
